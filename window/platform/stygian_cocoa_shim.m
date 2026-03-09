@@ -5,6 +5,7 @@
 #if defined(__APPLE__)
 
 #include "stygian_cocoa_shim.h"
+#include <stddef.h>
 
 bool stygian_cocoa_gl_set_pixel_format(void *win) {
   (void)win;

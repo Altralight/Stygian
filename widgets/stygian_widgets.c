@@ -11,6 +11,10 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // ============================================================================
 // Internal State (Immediate-Mode)
 // ============================================================================
@@ -93,9 +97,19 @@ typedef struct WidgetState {
 static WidgetState g_widget_state = {0};
 
 static double perf_now_seconds(void) {
+#ifdef _WIN32
+  static LARGE_INTEGER freq = {0};
+  LARGE_INTEGER counter;
+  if (freq.QuadPart == 0) {
+    QueryPerformanceFrequency(&freq);
+  }
+  QueryPerformanceCounter(&counter);
+  return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
   struct timespec ts;
   timespec_get(&ts, TIME_UTC);
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#endif
 }
 
 // Widget ID hash: uses x,y coordinates (floats) and label string for stable IDs
@@ -123,6 +137,87 @@ static uint32_t widget_id(float x, float y, const char *str) {
     }
   }
   return hash;
+}
+
+static float widget_text_width_estimate_or_measure(StygianContext *ctx,
+                                                   StygianFont font,
+                                                   const char *text,
+                                                   float size) {
+  size_t len;
+  if (!text || !text[0])
+    return 0.0f;
+  if (font)
+    return stygian_text_width(ctx, font, text, size);
+  len = strlen(text);
+  return (float)len * (size * 0.52f);
+}
+
+static void widget_fit_label(char *out, size_t out_cap, StygianContext *ctx,
+                             StygianFont font, const char *label,
+                             float max_width, float initial_size,
+                             float min_size, float *out_size,
+                             float *out_width) {
+  float size = initial_size;
+  float width = 0.0f;
+  size_t src_len;
+  size_t keep;
+  if (!out || out_cap == 0u)
+    return;
+
+  out[0] = '\0';
+  if (!label || !label[0]) {
+    if (out_size)
+      *out_size = size;
+    if (out_width)
+      *out_width = 0.0f;
+    return;
+  }
+
+  src_len = strlen(label);
+  if (src_len >= out_cap)
+    src_len = out_cap - 1u;
+  memcpy(out, label, src_len);
+  out[src_len] = '\0';
+
+  if (max_width < 4.0f)
+    max_width = 4.0f;
+  if (min_size < 8.0f)
+    min_size = 8.0f;
+  if (size < min_size)
+    size = min_size;
+
+  width = widget_text_width_estimate_or_measure(ctx, font, out, size);
+  while (width > max_width && size > min_size) {
+    size -= 1.0f;
+    width = widget_text_width_estimate_or_measure(ctx, font, out, size);
+  }
+
+  if (width > max_width && out_cap > 4u) {
+    keep = strlen(out);
+    if (keep > out_cap - 4u)
+      keep = out_cap - 4u;
+    while (keep > 0u) {
+      memcpy(out, label, keep);
+      out[keep] = '\0';
+      strncat(out, "...", out_cap - strlen(out) - 1u);
+      width = widget_text_width_estimate_or_measure(ctx, font, out, size);
+      if (width <= max_width)
+        break;
+      --keep;
+    }
+    if (keep == 0u) {
+      out[0] = '.';
+      out[1] = '.';
+      out[2] = '.';
+      out[3] = '\0';
+      width = widget_text_width_estimate_or_measure(ctx, font, out, size);
+    }
+  }
+
+  if (out_size)
+    *out_size = size;
+  if (out_width)
+    *out_width = width;
 }
 
 static bool point_in_rect(float px, float py, float x, float y, float w,
@@ -323,6 +418,15 @@ stygian_widgets_process_event_ex(StygianContext *ctx, const StygianEvent *e) {
     g_widget_state.mouse_dy = (float)e->mouse_move.dy;
     g_widget_state.mouse_x = e->mouse_move.x;
     g_widget_state.mouse_y = e->mouse_move.y;
+    if ((g_widget_state.mouse_down || g_widget_state.right_down ||
+         stygian_mouse_down(stygian_get_window(ctx), STYGIAN_MOUSE_MIDDLE)) &&
+        g_widget_state.active_id != 0u) {
+      impact |= STYGIAN_IMPACT_REQUEST_REPAINT;
+      if (g_widget_state.ctx) {
+        stygian_set_repaint_source(g_widget_state.ctx, "event-drag");
+        stygian_request_repaint_after_ms(g_widget_state.ctx, 0u);
+      }
+    }
   } else if (e->type == STYGIAN_EVENT_MOUSE_DOWN) {
     impact |= STYGIAN_IMPACT_POINTER_ONLY;
     g_widget_state.mouse_x = e->mouse_button.x;
@@ -357,6 +461,16 @@ stygian_widgets_process_event_ex(StygianContext *ctx, const StygianEvent *e) {
     } else {
       // Middle/other buttons do not own widget state, but can still wake a
       // frame for region-bound behaviors (e.g. graph pan).
+      hit_region =
+          widget_region_hit_prev((float)e->mouse_button.x,
+                                 (float)e->mouse_button.y,
+                                 STYGIAN_WIDGET_REGION_POINTER_LEFT) ||
+          widget_region_hit_prev((float)e->mouse_button.x,
+                                 (float)e->mouse_button.y,
+                                 STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES) ||
+          widget_region_hit_prev((float)e->mouse_button.x,
+                                 (float)e->mouse_button.y,
+                                 STYGIAN_WIDGET_REGION_SCROLL);
     }
     // Pointer down requests only evaluation for known interactive regions.
     // Mutation remains separately tracked and must be emitted by widget logic.
@@ -604,6 +718,7 @@ void stygian_perf_widget(StygianContext *ctx, StygianFont font,
   double elapsed_s;
   uint32_t sample_steps;
   float wall_fps;
+  float render_fps;
   bool draw_memory;
   bool draw_glyphs;
   bool draw_triad;
@@ -679,6 +794,9 @@ void stygian_perf_widget(StygianContext *ctx, StygianFont font,
                         STYGIAN_PERF_HISTORY_MAX;
     latest_ms = state->history_ms[last_idx];
   }
+  render_fps = state->fps_smoothed > 0.0f
+                   ? state->fps_smoothed
+                   : (latest_ms > 0.0f ? (1000.0f / latest_ms) : 0.0f);
   frame_budget_hz = target_idle_hz > 0u ? target_idle_hz : 1u;
   budget_ms = 1000.0f / (float)frame_budget_hz;
   if (latest_ms > budget_ms * 1.35f) {
@@ -871,8 +989,15 @@ void stygian_perf_widget(StygianContext *ctx, StygianFont font,
 
   line_y = y + header_h + 6.0f;
   snprintf(line, sizeof(line),
-           "Frame: %.2f ms | FPS: %.1f", latest_ms, state->fps_wall_smoothed);
+           "Render: %.2f ms | FPS: %.0f", latest_ms, render_fps);
   stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.85f, 0.9f, 0.95f,
+               1.0f);
+  line_y += line_h;
+
+  snprintf(line, sizeof(line),
+           "Display: %.1f FPS | Present: %.2f ms", state->fps_wall_smoothed,
+           present_ms);
+  stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.82f, 0.88f, 0.94f,
                1.0f);
   line_y += line_h;
 
@@ -883,23 +1008,9 @@ void stygian_perf_widget(StygianContext *ctx, StygianFont font,
                1.0f);
   line_y += line_h;
 
-  snprintf(line, sizeof(line), "Scope replay h/m/f: %u/%u/%u",
-           scope_replay_hits, scope_replay_misses, scope_replay_forced);
-  stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.8f, 0.86f, 0.92f,
-               1.0f);
-  line_y += line_h;
-
   snprintf(line, sizeof(line),
-           "Repaint: %s flags=0x%X pending=%u next_wait=%ums",
-           repaint_source ? repaint_source : "none", repaint_flags,
-           repaint_pending ? 1u : 0u, repaint_wait_ms);
-  stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.8f, 0.86f, 0.92f,
-               1.0f);
-  line_y += line_h;
-
-  snprintf(line, sizeof(line),
-           "CPU ms: build=%.2f submit=%.2f present=%.2f | GPU ms: %.2f",
-           build_ms, submit_ms, present_ms, gpu_ms);
+           "CPU ms: build=%.2f submit=%.2f | GPU ms: %.2f", build_ms, submit_ms,
+           gpu_ms);
   stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.8f, 0.86f, 0.92f,
                1.0f);
   line_y += line_h;
@@ -910,11 +1021,27 @@ void stygian_perf_widget(StygianContext *ctx, StygianFont font,
                1.0f);
   line_y += line_h;
 
-  snprintf(line, sizeof(line), "Clip regions: %u / %u", clip_count,
-           (uint32_t)clip_capacity);
-  stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.78f, 0.82f,
-               0.88f, 1.0f);
-  line_y += line_h;
+  if (!state->compact_mode) {
+    snprintf(line, sizeof(line), "Scope replay h/m/f: %u/%u/%u",
+             scope_replay_hits, scope_replay_misses, scope_replay_forced);
+    stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.8f, 0.86f,
+                 0.92f, 1.0f);
+    line_y += line_h;
+
+    snprintf(line, sizeof(line),
+             "Repaint: %s flags=0x%X pending=%u next_wait=%ums",
+             repaint_source ? repaint_source : "none", repaint_flags,
+             repaint_pending ? 1u : 0u, repaint_wait_ms);
+    stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.8f, 0.86f,
+                 0.92f, 1.0f);
+    line_y += line_h;
+
+    snprintf(line, sizeof(line), "Clip regions: %u / %u", clip_count,
+             (uint32_t)clip_capacity);
+    stygian_text(ctx, font, line, x + 8.0f, line_y, line_size, 0.78f, 0.82f,
+                 0.88f, 1.0f);
+    line_y += line_h;
+  }
 
   if (draw_memory) {
     snprintf(line, sizeof(line), "Element pool: active=%u free=%u cap=%u",
@@ -1405,10 +1532,18 @@ bool stygian_button(StygianContext *ctx, StygianFont font, const char *label,
 
   // Render text (centered)
   if (label) {
-    float text_w = stygian_text_width(ctx, font, label, 16.0f);
-    float text_x = x + (w - text_w) * 0.5f;
-    float text_y = y + (h - 16.0f) * 0.5f;
-    stygian_text(ctx, font, label, text_x, text_y, 16.0f, 1.0f, 1.0f, 1.0f,
+    char fitted[128];
+    float text_size = 16.0f;
+    float text_w = 0.0f;
+    float text_x;
+    float text_y;
+    widget_fit_label(fitted, sizeof(fitted), ctx, font, label, w - 10.0f,
+                     16.0f, 11.0f, &text_size, &text_w);
+    text_x = x + (w - text_w) * 0.5f;
+    if (text_x < x + 4.0f)
+      text_x = x + 4.0f;
+    text_y = y + (h - text_size) * 0.5f;
+    stygian_text(ctx, font, fitted, text_x, text_y, text_size, 1.0f, 1.0f, 1.0f,
                  1.0f);
   }
 
@@ -1465,10 +1600,18 @@ bool stygian_button_ex(StygianContext *ctx, StygianFont font,
                        color[1], color[2], color[3], style->border_radius);
 
   if (state->label) {
-    float text_w = stygian_text_width(ctx, font, state->label, 16.0f);
-    float text_x = state->x + (state->w - text_w) * 0.5f;
-    float text_y = state->y + (state->h - 16.0f) * 0.5f;
-    stygian_text(ctx, font, state->label, text_x, text_y, 16.0f,
+    char fitted[128];
+    float text_size = 16.0f;
+    float text_w = 0.0f;
+    float text_x;
+    float text_y;
+    widget_fit_label(fitted, sizeof(fitted), ctx, font, state->label,
+                     state->w - 10.0f, 16.0f, 11.0f, &text_size, &text_w);
+    text_x = state->x + (state->w - text_w) * 0.5f;
+    if (text_x < state->x + 4.0f)
+      text_x = state->x + 4.0f;
+    text_y = state->y + (state->h - text_size) * 0.5f;
+    stygian_text(ctx, font, fitted, text_x, text_y, text_size,
                  style->text_color[0], style->text_color[1],
                  style->text_color[2], style->text_color[3]);
   }
@@ -1848,6 +1991,10 @@ bool stygian_radio_button(StygianContext *ctx, StygianFont font,
 // Text Input Widget
 // ============================================================================
 
+static int text_utf8_encode(uint32_t cp, char out[4]);
+static int text_utf8_prev_start(const char *text, int idx);
+static int text_utf8_next_end(const char *text, int text_len, int idx);
+
 bool stygian_text_input(StygianContext *ctx, StygianFont font, float x, float y,
                         float w, float h, char *buffer, int buffer_size) {
   // Stable per-field ID: do NOT hash buffer contents (changes each keystroke).
@@ -1889,8 +2036,9 @@ bool stygian_text_input(StygianContext *ctx, StygianFont font, float x, float y,
 
       if (key == STYGIAN_KEY_BACKSPACE) {
         if (len > 0) {
-          buffer[len - 1] = '\0';
-          len--;
+          int prev = text_utf8_prev_start(buffer, (int)len);
+          buffer[prev] = '\0';
+          len = (size_t)prev;
           changed = true;
         }
       } else if (key == STYGIAN_KEY_DELETE) {
@@ -1919,13 +2067,16 @@ bool stygian_text_input(StygianContext *ctx, StygianFont font, float x, float y,
       }
     }
 
-    // Process character input (UTF-32 codepoints from event queue).
-    // Keep this simple for now: BMP/ASCII append path for chat input.
+    // text input still has byte-wise editing, but at least typed chars are real UTF-8 now
     for (i = 0; i < g_widget_state.char_count; i++) {
       uint32_t cp = g_widget_state.char_events[i];
-      if (cp >= 32 && cp <= 0x7E) {
-        if ((int)len < (buffer_size - 1)) {
-          buffer[len++] = (char)cp;
+      char utf8[4];
+      int utf8_len;
+      if (cp >= 32u && cp != 0x7Fu) {
+        utf8_len = text_utf8_encode(cp, utf8);
+        if (utf8_len > 0 && (int)len + utf8_len < buffer_size) {
+          memcpy(buffer + len, utf8, (size_t)utf8_len);
+          len += (size_t)utf8_len;
           buffer[len] = '\0';
           changed = true;
         }
@@ -1991,6 +2142,7 @@ typedef struct {
   StygianContext *ctx;
   StygianFont font;
   const char *text;
+  size_t text_len;
   float max_w;
 
   // State
@@ -2001,15 +2153,536 @@ typedef struct {
   int line_index;
   bool done;
 
-  // Cached ASCII glyph advance widths (eliminates per-char font lookups)
-  float advance_lut[128];
+  const float *advance_lut;
 } TextAreaIter;
+
+typedef struct {
+  const char *start;
+  const char *end;
+  int idx_start;
+  int idx_end;
+  float y;
+} TextAreaLine;
+
+typedef struct {
+  TextAreaLine *lines;
+  uint32_t count;
+  uint32_t capacity;
+  float total_height;
+  float max_w;
+  bool show_scrollbar;
+  const float *advance_lut;
+  TextAreaLine stack[256];
+} TextAreaLayout;
+
+typedef struct {
+  StygianTextArea *state;
+  StygianContext *ctx;
+  StygianFont font;
+  char *buffer;
+  size_t text_len;
+  uint32_t content_revision;
+  uint64_t text_hash;
+  float w;
+  float h;
+  bool valid;
+  bool show_scrollbar_hint;
+  TextAreaLayout layout;
+} TextAreaPersistentCache;
+
+typedef struct {
+  StygianContext *ctx;
+  StygianFont font;
+  bool valid;
+  float advance_lut[128];
+} TextAreaAdvanceCache;
+
+static TextAreaAdvanceCache g_text_area_advance_cache[4];
+static uint32_t g_text_area_advance_cache_next = 0u;
+static TextAreaPersistentCache g_text_area_layout_cache[8];
+static uint32_t g_text_area_layout_cache_next = 0u;
+
+static const float *text_area_get_advance_lut(StygianContext *ctx,
+                                              StygianFont font) {
+  uint32_t slot = 0u;
+  if (!ctx || font == 0u)
+    return NULL;
+  for (uint32_t i = 0u; i < (uint32_t)(sizeof(g_text_area_advance_cache) /
+                                        sizeof(g_text_area_advance_cache[0]));
+       i++) {
+    if (g_text_area_advance_cache[i].valid &&
+        g_text_area_advance_cache[i].ctx == ctx &&
+        g_text_area_advance_cache[i].font == font) {
+      return g_text_area_advance_cache[i].advance_lut;
+    }
+    if (!g_text_area_advance_cache[i].valid) {
+      slot = i;
+      goto fill_slot;
+    }
+  }
+  slot = g_text_area_advance_cache_next++;
+  slot %= (uint32_t)(sizeof(g_text_area_advance_cache) /
+                     sizeof(g_text_area_advance_cache[0]));
+
+fill_slot:
+  g_text_area_advance_cache[slot].ctx = ctx;
+  g_text_area_advance_cache[slot].font = font;
+  g_text_area_advance_cache[slot].valid = true;
+  // stop redoing 96 tiny text_width calls every frame
+  for (int c = 0; c < 128; c++) {
+    char temp[2] = {(char)c, 0};
+    g_text_area_advance_cache[slot].advance_lut[c] =
+        (c >= 32) ? stygian_text_width(ctx, font, temp, 16.0f) : 0.0f;
+  }
+  return g_text_area_advance_cache[slot].advance_lut;
+}
+
+static float text_area_char_width(const float *lut, StygianContext *ctx,
+                                  StygianFont font, char c) {
+  unsigned char uc = (unsigned char)c;
+  if (lut && uc < 128)
+    return lut[uc];
+  return stygian_text_width(ctx, font, (char[]){c, 0}, 16.0f);
+}
+
+static float text_area_grapheme_width(const float *lut, StygianContext *ctx,
+                                      StygianFont font, const char *start,
+                                      const char *end) {
+  size_t len;
+  if (!start || !end || end <= start)
+    return 0.0f;
+  len = (size_t)(end - start);
+  if (len == 1u) {
+    float cw = text_area_char_width(lut, ctx, font, *start);
+    if (*start == ' ' && cw < 1.0f)
+      cw = 4.0f;
+    return cw;
+  }
+  return stygian_text_width_span(ctx, font, start, len, 16.0f);
+}
+
+static bool text_area_grapheme_is_wrap_space(const char *start,
+                                             const char *end) {
+  return start && end == (start + 1) &&
+         ((unsigned char)start[0] == ' ' || (unsigned char)start[0] == '\t');
+}
+
+static int text_utf8_encode(uint32_t cp, char out[4]) {
+  if (!out)
+    return 0;
+  if (cp <= 0x7Fu) {
+    out[0] = (char)cp;
+    return 1;
+  }
+  if (cp <= 0x7FFu) {
+    out[0] = (char)(0xC0u | (cp >> 6));
+    out[1] = (char)(0x80u | (cp & 0x3Fu));
+    return 2;
+  }
+  if (cp >= 0xD800u && cp <= 0xDFFFu)
+    return 0;
+  if (cp <= 0xFFFFu) {
+    out[0] = (char)(0xE0u | (cp >> 12));
+    out[1] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+    out[2] = (char)(0x80u | (cp & 0x3Fu));
+    return 3;
+  }
+  if (cp <= 0x10FFFFu) {
+    out[0] = (char)(0xF0u | (cp >> 18));
+    out[1] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+    out[2] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+    out[3] = (char)(0x80u | (cp & 0x3Fu));
+    return 4;
+  }
+  return 0;
+}
+
+static int text_utf8_prev_start(const char *text, int idx) {
+  size_t text_len;
+  size_t cursor;
+  size_t prev_start;
+  StygianGraphemeSpan span;
+  if (!text || idx <= 0)
+    return 0;
+  text_len = strlen(text);
+  if ((size_t)idx > text_len)
+    idx = (int)text_len;
+  cursor = 0u;
+  prev_start = 0u;
+  while (cursor < (size_t)idx &&
+         stygian_grapheme_next(text, text_len, &cursor, &span)) {
+    size_t span_end = span.byte_start + span.byte_len;
+    if ((int)span_end >= idx)
+      return (int)span.byte_start;
+    prev_start = span.byte_start;
+  }
+  return (int)prev_start;
+}
+
+static int text_utf8_next_end(const char *text, int text_len, int idx) {
+  size_t cursor = 0u;
+  StygianGraphemeSpan span;
+  if (!text || idx < 0)
+    return 0;
+  if (idx >= text_len)
+    return text_len;
+  while (cursor < (size_t)text_len &&
+         stygian_grapheme_next(text, (size_t)text_len, &cursor, &span)) {
+    size_t span_end = span.byte_start + span.byte_len;
+    if ((int)span_end > idx)
+      return (int)span_end;
+  }
+  return (int)cursor;
+}
+
+static void iter_begin(TextAreaIter *it, StygianContext *ctx, StygianFont font,
+                       const char *text, float max_w);
+static bool iter_next_line(TextAreaIter *it, const char **out_start,
+                           const char **out_end);
+static float measure_line_lut(const float *lut, StygianContext *ctx,
+                              StygianFont font, const char *start,
+                              const char *end);
+
+static uint64_t text_area_hash_buffer(const char *text, size_t len) {
+  uint64_t hash = 1469598103934665603ull;
+  for (size_t i = 0; i < len; i++) {
+    hash ^= (uint64_t)(unsigned char)text[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+static int text_area_buffer_length(StygianTextArea *state) {
+  if (!state || !state->buffer)
+    return 0;
+  if (state->buffer_len >= 0 && state->buffer_len < state->buffer_size &&
+      state->buffer[state->buffer_len] == '\0') {
+    return state->buffer_len;
+  }
+  state->buffer_len = (int)strlen(state->buffer);
+  return state->buffer_len;
+}
+
+static void text_area_bump_revision(StygianTextArea *state) {
+  if (!state)
+    return;
+  state->content_revision++;
+  if (state->content_revision == 0u)
+    state->content_revision = 1u;
+}
+
+void stygian_text_area_mark_text_dirty(StygianTextArea *state) {
+  if (!state)
+    return;
+  state->buffer_len = -1;
+  text_area_bump_revision(state);
+}
+
+static float text_area_content_width(float w, bool show_scrollbar) {
+  float max_w = w - (show_scrollbar ? 14.0f : 10.0f);
+  if (max_w < 20.0f)
+    max_w = 20.0f;
+  return max_w;
+}
+
+static void text_area_layout_init(TextAreaLayout *layout) {
+  if (!layout)
+    return;
+  memset(layout, 0, sizeof(*layout));
+  layout->lines = layout->stack;
+  layout->capacity = (uint32_t)(sizeof(layout->stack) / sizeof(layout->stack[0]));
+}
+
+static void text_area_layout_reset(TextAreaLayout *layout) {
+  if (!layout)
+    return;
+  layout->count = 0u;
+  layout->total_height = 0.0f;
+  layout->max_w = 0.0f;
+  layout->show_scrollbar = false;
+  layout->advance_lut = NULL;
+  if (!layout->lines) {
+    layout->lines = layout->stack;
+    layout->capacity =
+        (uint32_t)(sizeof(layout->stack) / sizeof(layout->stack[0]));
+  }
+}
+
+static bool text_area_layout_reserve(TextAreaLayout *layout, uint32_t need) {
+  TextAreaLine *grown;
+  uint32_t new_capacity;
+  if (!layout || need <= layout->capacity)
+    return true;
+
+  new_capacity = layout->capacity;
+  while (new_capacity < need) {
+    uint32_t next = new_capacity * 2u;
+    if (next <= new_capacity) {
+      new_capacity = need;
+      break;
+    }
+    new_capacity = next;
+  }
+
+  if (layout->lines == layout->stack) {
+    grown = (TextAreaLine *)malloc(sizeof(TextAreaLine) * new_capacity);
+    if (!grown)
+      return false;
+    memcpy(grown, layout->stack, sizeof(TextAreaLine) * layout->count);
+  } else {
+    grown = (TextAreaLine *)realloc(layout->lines,
+                                    sizeof(TextAreaLine) * new_capacity);
+    if (!grown)
+      return false;
+  }
+
+  layout->lines = grown;
+  layout->capacity = new_capacity;
+  return true;
+}
+
+static bool text_area_layout_build_raw(TextAreaLayout *layout,
+                                       StygianContext *ctx, StygianFont font,
+                                       const char *text, float max_w) {
+  TextAreaIter it;
+  const char *start;
+  const char *end;
+  if (!layout)
+    return false;
+
+  layout->count = 0u;
+  layout->total_height = 0.0f;
+  layout->max_w = max_w;
+
+  iter_begin(&it, ctx, font, text, max_w);
+  layout->advance_lut = it.advance_lut;
+  while (iter_next_line(&it, &start, &end)) {
+    if (!text_area_layout_reserve(layout, layout->count + 1u))
+      return false;
+    layout->lines[layout->count].start = start;
+    layout->lines[layout->count].end = end;
+    layout->lines[layout->count].idx_start = (int)(start - text);
+    layout->lines[layout->count].idx_end = (int)(end - text);
+    layout->lines[layout->count].y = it.y - 18.0f;
+    layout->count++;
+  }
+  layout->total_height = it.y;
+  return true;
+}
+
+static bool text_area_layout_build_view(TextAreaLayout *layout,
+                                        StygianContext *ctx, StygianFont font,
+                                        const char *text, float w, float h,
+                                        bool show_scrollbar_hint) {
+  bool show_scrollbar = show_scrollbar_hint;
+  float max_w = text_area_content_width(w, show_scrollbar);
+  if (!text_area_layout_build_raw(layout, ctx, font, text, max_w))
+    return false;
+
+  if ((layout->total_height > h) != show_scrollbar) {
+    show_scrollbar = (layout->total_height > h);
+    max_w = text_area_content_width(w, show_scrollbar);
+    if (!text_area_layout_build_raw(layout, ctx, font, text, max_w))
+      return false;
+  }
+
+  layout->show_scrollbar = show_scrollbar;
+  return true;
+}
+
+static TextAreaPersistentCache *
+text_area_layout_cache_slot(StygianContext *ctx, StygianFont font,
+                            StygianTextArea *state) {
+  TextAreaPersistentCache *cache = NULL;
+  for (uint32_t i = 0u;
+       i < (uint32_t)(sizeof(g_text_area_layout_cache) /
+                      sizeof(g_text_area_layout_cache[0]));
+       i++) {
+    if (g_text_area_layout_cache[i].valid &&
+        g_text_area_layout_cache[i].state == state &&
+        g_text_area_layout_cache[i].ctx == ctx) {
+      cache = &g_text_area_layout_cache[i];
+      break;
+    }
+    if (!cache && !g_text_area_layout_cache[i].valid)
+      cache = &g_text_area_layout_cache[i];
+  }
+  if (!cache) {
+    cache = &g_text_area_layout_cache[g_text_area_layout_cache_next++ %
+                                      (uint32_t)(sizeof(g_text_area_layout_cache) /
+                                                 sizeof(g_text_area_layout_cache[0]))];
+  }
+  if (cache->layout.capacity == 0u)
+    text_area_layout_init(&cache->layout);
+  cache->ctx = ctx;
+  cache->font = font;
+  cache->state = state;
+  return cache;
+}
+
+static bool text_area_layout_fetch_cached(TextAreaLayout **out_layout,
+                                          StygianContext *ctx,
+                                          StygianFont font,
+                                          StygianTextArea *state,
+                                          bool show_scrollbar_hint) {
+  TextAreaPersistentCache *cache;
+  int text_len;
+  uint32_t content_revision;
+  bool use_hash_fallback;
+  uint64_t text_hash = 0u;
+  if (!out_layout || !ctx || !state || !state->buffer)
+    return false;
+
+  cache = text_area_layout_cache_slot(ctx, font, state);
+  text_len = text_area_buffer_length(state);
+  content_revision = state->content_revision;
+  use_hash_fallback = (content_revision == 0u);
+  if (use_hash_fallback) {
+    text_hash = text_area_hash_buffer(state->buffer, (size_t)text_len);
+  }
+
+  if (!cache->valid || cache->buffer != state->buffer ||
+      cache->text_len != (size_t)text_len ||
+      cache->content_revision != content_revision ||
+      (use_hash_fallback && cache->text_hash != text_hash) ||
+      cache->w != state->w || cache->h != state->h ||
+      cache->font != font || cache->show_scrollbar_hint != show_scrollbar_hint) {
+    text_area_layout_reset(&cache->layout);
+    if (!text_area_layout_build_view(&cache->layout, ctx, font, state->buffer,
+                                     state->w, state->h,
+                                     show_scrollbar_hint)) {
+      return false;
+    }
+    cache->buffer = state->buffer;
+    cache->text_len = (size_t)text_len;
+    cache->content_revision = content_revision;
+    cache->text_hash = text_hash;
+    cache->w = state->w;
+    cache->h = state->h;
+    cache->show_scrollbar_hint = show_scrollbar_hint;
+    cache->valid = true;
+  }
+
+  *out_layout = &cache->layout;
+  return true;
+}
+
+static int text_xy_to_index_layout(const TextAreaLayout *layout,
+                                   StygianContext *ctx, StygianFont font,
+                                   const char *text, float param_x,
+                                   float param_y, float scroll_y) {
+  const TextAreaLine *line;
+  float target_y;
+  if (!layout || !text || !*text || layout->count == 0u)
+    return text ? (int)strlen(text) : 0;
+
+  target_y = param_y + scroll_y;
+  if (target_y <= 0.0f)
+    line = &layout->lines[0];
+  else if (target_y >= layout->total_height)
+    return (int)strlen(text);
+  else
+    line = &layout->lines[(uint32_t)(target_y / 18.0f)];
+
+  {
+    size_t cursor = (size_t)line->idx_start;
+    size_t limit = (size_t)line->idx_end;
+    float lx = 0.0f;
+    while (cursor < limit) {
+      StygianGraphemeSpan span;
+      const char *span_start;
+      const char *span_end;
+      float cw;
+      if (!stygian_grapheme_next(text, limit, &cursor, &span))
+        break;
+      span_start = text + span.byte_start;
+      span_end = span_start + span.byte_len;
+      cw = text_area_grapheme_width(layout->advance_lut, ctx, font, span_start,
+                                    span_end);
+      if (param_x < (lx + cw * 0.5f))
+        return (int)span.byte_start;
+      lx += cw;
+    }
+  }
+  return line->idx_end;
+}
+
+static const TextAreaLine *
+text_area_layout_line_for_index(const TextAreaLayout *layout, int idx,
+                                uint32_t *out_line_index) {
+  if (!layout || layout->count == 0u)
+    return NULL;
+  for (uint32_t i = 0u; i < layout->count; i++) {
+    const TextAreaLine *line = &layout->lines[i];
+    if (idx >= line->idx_start && idx <= line->idx_end) {
+      if (out_line_index)
+        *out_line_index = i;
+      return line;
+    }
+  }
+  if (idx <= layout->lines[0].idx_start) {
+    if (out_line_index)
+      *out_line_index = 0u;
+    return &layout->lines[0];
+  }
+  if (out_line_index)
+    *out_line_index = layout->count - 1u;
+  return &layout->lines[layout->count - 1u];
+}
+
+static float text_area_line_cursor_x(const TextAreaLayout *layout,
+                                     StygianContext *ctx, StygianFont font,
+                                     const TextAreaLine *line,
+                                     const char *buffer, int idx) {
+  int clamped_idx;
+  if (!layout || !line || !buffer)
+    return 0.0f;
+  clamped_idx = idx;
+  if (clamped_idx < line->idx_start)
+    clamped_idx = line->idx_start;
+  if (clamped_idx > line->idx_end)
+    clamped_idx = line->idx_end;
+  return measure_line_lut(layout->advance_lut, ctx, font, line->start,
+                          buffer + clamped_idx);
+}
+
+static int text_area_index_from_line_x(const TextAreaLayout *layout,
+                                       StygianContext *ctx, StygianFont font,
+                                       const TextAreaLine *line,
+                                       const char *buffer, float target_x) {
+  if (!layout || !line || !buffer)
+    return 0;
+  if (target_x <= 0.0f)
+    return line->idx_start;
+  {
+    size_t cursor = (size_t)line->idx_start;
+    size_t limit = (size_t)line->idx_end;
+    float lx = 0.0f;
+    while (cursor < limit) {
+      StygianGraphemeSpan span;
+      const char *span_start;
+      const char *span_end;
+      float cw;
+      if (!stygian_grapheme_next(buffer, limit, &cursor, &span))
+        break;
+      span_start = buffer + span.byte_start;
+      span_end = span_start + span.byte_len;
+      cw = text_area_grapheme_width(layout->advance_lut, ctx, font, span_start,
+                                    span_end);
+      if (target_x < (lx + cw * 0.5f))
+        return (int)span.byte_start;
+      lx += cw;
+    }
+  }
+  return line->idx_end;
+}
 
 static void iter_begin(TextAreaIter *it, StygianContext *ctx, StygianFont font,
                        const char *text, float max_w) {
   it->ctx = ctx;
   it->font = font;
   it->text = text;
+  it->text_len = text ? strlen(text) : 0u;
   it->max_w = max_w;
   it->p = text;
   it->line_start = text;
@@ -2017,71 +2690,79 @@ static void iter_begin(TextAreaIter *it, StygianContext *ctx, StygianFont font,
   it->y = 0;
   it->line_index = 0;
   it->done = (*text == 0);
-
-  // Pre-compute ASCII advance widths once
-  for (int c = 0; c < 128; c++) {
-    char temp[2] = {(char)c, 0};
-    it->advance_lut[c] =
-        (c >= 32) ? stygian_text_width(ctx, font, temp, 16.0f) : 0.0f;
-  }
+  it->advance_lut = text_area_get_advance_lut(ctx, font);
 }
 
 // Advances to next line (hard or soft break)
 // Returns true if there is a line to process
 static bool iter_next_line(TextAreaIter *it, const char **out_start,
                            const char **out_end) {
+  size_t scan_idx;
+  const char *last_space_start;
+  const char *last_space_end;
   if (it->done)
     return false;
 
   it->line_start = it->p;
   it->current_w = 0;
 
-  const char *scan = it->p;
-  const char *last_space = NULL;
+  scan_idx = (size_t)(it->p - it->text);
+  last_space_start = NULL;
+  last_space_end = NULL;
 
-  while (*scan) {
-    if (*scan == '\n') {
+  while (scan_idx < it->text_len) {
+    StygianGraphemeSpan span;
+    const char *span_start;
+    const char *span_end;
+    float cw;
+    if (!stygian_grapheme_next(it->text, it->text_len, &scan_idx, &span))
+      break;
+    span_start = it->text + span.byte_start;
+    span_end = span_start + span.byte_len;
+
+    if (span.byte_len == 1u && span_start[0] == '\r')
+      continue;
+
+    if (span.byte_len == 1u && span_start[0] == '\n') {
       *out_start = it->line_start;
-      *out_end = scan;
-      it->p = scan + 1; // Skip newline
+      *out_end = span_start;
+      it->p = span_end; // Skip newline
       it->y += 18.0f;
       return true;
     }
 
-    // Fast path uses ASCII LUT; non-ASCII falls back to font measurement.
-    unsigned char uc = (unsigned char)*scan;
-    float cw = (uc < 128) ? it->advance_lut[uc]
-                          : stygian_text_width(it->ctx, it->font,
-                                               (char[]){*scan, 0}, 16.0f);
+    cw = text_area_grapheme_width(it->advance_lut, it->ctx, it->font,
+                                  span_start, span_end);
 
     if (it->current_w + cw > it->max_w) {
-      // Soft wrap needed
-      if (last_space) {
-        // Break at space
+      if (last_space_start) {
         *out_start = it->line_start;
-        *out_end = last_space;
-        it->p = last_space + 1; // Skip space
+        *out_end = last_space_start;
+        it->p = last_space_end;
+      } else if (span_start > it->line_start) {
+        *out_start = it->line_start;
+        *out_end = span_start;
+        it->p = span_start;
       } else {
-        // Forced break at char
         *out_start = it->line_start;
-        *out_end = scan;
-        it->p = scan; // Start next line here
+        *out_end = span_end;
+        it->p = span_end;
       }
       it->y += 18.0f;
       return true;
     }
 
     it->current_w += cw;
-    if (*scan == ' ') {
-      last_space = scan;
+    if (text_area_grapheme_is_wrap_space(span_start, span_end)) {
+      last_space_start = span_start;
+      last_space_end = span_end;
     }
-    scan++;
   }
 
   // End of string
   *out_start = it->line_start;
-  *out_end = scan;
-  it->p = scan;    // Point to null
+  *out_end = it->text + it->text_len;
+  it->p = it->text + it->text_len; // Point to null
   it->done = true; // Mark as last pass
   it->y += 18.0f;
   return true;
@@ -2092,19 +2773,39 @@ static bool iter_next_line(TextAreaIter *it, const char **out_start,
 static float measure_line_lut(const float *lut, StygianContext *ctx,
                               StygianFont font, const char *start,
                               const char *end) {
-  float w = 0;
-  const char *p = start;
-  while (p < end) {
-    unsigned char uc = (unsigned char)*p;
-    float cw = (lut && uc < 128)
-                   ? lut[uc]
-                   : stygian_text_width(ctx, font, (char[]){*p, 0}, 16.0f);
-    if (*p == ' ' && cw < 1.0f)
-      cw = 4.0f; // Minimal width for spaces
-    w += cw;
-    p++;
+  float w = 0.0f;
+  size_t cursor = 0u;
+  size_t limit;
+  if (!start || !end || end <= start)
+    return 0.0f;
+  limit = (size_t)(end - start);
+  while (cursor < limit) {
+    StygianGraphemeSpan span;
+    const char *span_start;
+    const char *span_end;
+    if (!stygian_grapheme_next(start, limit, &cursor, &span))
+      break;
+    span_start = start + span.byte_start;
+    span_end = span_start + span.byte_len;
+    if (span.byte_len == 1u &&
+        ((unsigned char)span_start[0] == '\r' ||
+         (unsigned char)span_start[0] == '\n')) {
+      continue;
+    }
+    w += text_area_grapheme_width(lut, ctx, font, span_start, span_end);
   }
   return w;
+}
+
+static void draw_text_span(StygianContext *ctx, StygianFont font,
+                           const char *start, const char *end, float x,
+                           float y, float r, float g, float b, float a) {
+  size_t len;
+  if (!ctx || !start || !end || end <= start)
+    return;
+
+  len = (size_t)(end - start);
+  stygian_text_span(ctx, font, start, len, x, y, 16.0f, r, g, b, a);
 }
 
 static int text_xy_to_index(StygianContext *ctx, StygianFont font,
@@ -2126,17 +2827,23 @@ static int text_xy_to_index(StygianContext *ctx, StygianFont font,
     float line_bottom = it.y;
 
     if (target_y >= line_top && target_y < line_bottom) {
-      // Found the line. Scan X.
-      // Linear scan within line
-      const char *scan = start;
-      float lx = 0;
-      while (scan < end) {
-        float cw = measure_line_lut(NULL, ctx, font, scan, scan + 1);
-        float mid_x = lx + cw * 0.5f;
-        if (param_x < mid_x)
-          return (int)(scan - text);
+      size_t cursor = (size_t)(start - text);
+      size_t limit = (size_t)(end - text);
+      float lx = 0.0f;
+      while (cursor < limit) {
+        StygianGraphemeSpan span;
+        const char *span_start;
+        const char *span_end;
+        float cw;
+        if (!stygian_grapheme_next(text, limit, &cursor, &span))
+          break;
+        span_start = text + span.byte_start;
+        span_end = span_start + span.byte_len;
+        cw = text_area_grapheme_width(it.advance_lut, ctx, font, span_start,
+                                      span_end);
+        if (param_x < (lx + cw * 0.5f))
+          return (int)span.byte_start;
         lx += cw;
-        scan++;
       }
       return (int)(end - text); // Clicked past end of line
     }
@@ -2144,29 +2851,64 @@ static int text_xy_to_index(StygianContext *ctx, StygianFont font,
   return (int)strlen(text); // Below all text
 }
 
-// Helper to insert character at index
-static void buffer_insert(char *buf, int size, int idx, char c) {
-  int len = strlen(buf);
-  if (len + 1 >= size)
+static void text_area_delete_range(StygianTextArea *state, int start, int end) {
+  int len;
+  if (!state || !state->buffer)
     return;
-  memmove(buf + idx + 1, buf + idx, len - idx + 1);
-  buf[idx] = c;
+  len = text_area_buffer_length(state);
+  if (start < 0)
+    start = 0;
+  if (end < start)
+    end = start;
+  if (start > len)
+    start = len;
+  if (end > len)
+    end = len;
+  if (start == end)
+    return;
+  memmove(state->buffer + start, state->buffer + end, (size_t)(len - end + 1));
+  state->buffer_len = len - (end - start);
+  text_area_bump_revision(state);
 }
 
-// Helper to delete character before index
-static void buffer_delete(char *buf, int idx) {
-  if (idx <= 0)
-    return;
-  int len = strlen(buf);
-  memmove(buf + idx - 1, buf + idx, len - idx + 1);
+static int text_area_insert_span(StygianTextArea *state, int idx,
+                                 const char *text, int text_len) {
+  int len;
+  if (!state || !state->buffer || !text || text_len <= 0)
+    return 0;
+  len = text_area_buffer_length(state);
+  if (idx < 0)
+    idx = 0;
+  if (idx > len)
+    idx = len;
+  if (len + text_len >= state->buffer_size)
+    text_len = state->buffer_size - len - 1;
+  if (text_len <= 0)
+    return 0;
+  memmove(state->buffer + idx + text_len, state->buffer + idx,
+          (size_t)(len - idx + 1));
+  memcpy(state->buffer + idx, text, (size_t)text_len);
+  state->buffer_len = len + text_len;
+  text_area_bump_revision(state);
+  return text_len;
 }
 
 bool stygian_text_area(StygianContext *ctx, StygianFont font,
                        StygianTextArea *state) {
   uint32_t id = widget_id(state->x, state->y, "textarea");
-  StygianWidgetRegionFlags region_flags =
-      STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES;
-  if (state->total_height > state->h) {
+  int initial_cursor_idx;
+  TextAreaLayout *layout = NULL;
+  bool layout_ready;
+  StygianWidgetRegionFlags region_flags;
+  float max_w_fallback;
+  float content_height;
+  bool show_scrollbar;
+  layout_ready = text_area_layout_fetch_cached(
+      &layout, ctx, font, state, state->total_height > state->h);
+
+  region_flags = STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES;
+  if ((layout_ready && layout->show_scrollbar) ||
+      (!layout_ready && state->total_height > state->h)) {
     region_flags =
         (StygianWidgetRegionFlags)(region_flags | STYGIAN_WIDGET_REGION_SCROLL);
   }
@@ -2176,6 +2918,8 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
                                state->x, state->y, state->w, state->h);
   widget_register_focusable(id);
   widget_nav_prepare();
+  max_w_fallback = text_area_content_width(state->w, state->total_height > state->h);
+  initial_cursor_idx = state->cursor_idx;
 
   // Input Handling
   if (hovered && widget_mouse_pressed()) {
@@ -2184,9 +2928,12 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
     state->focused = true;
     float local_x = g_widget_state.mouse_x - state->x;
     float local_y = g_widget_state.mouse_y - state->y;
-    // Pass state->w - 10 (padding) as max wrap width
-    int idx = text_xy_to_index(ctx, font, state->buffer, local_x, local_y,
-                               state->scroll_y, state->w - 10.0f);
+    int idx = layout_ready ? text_xy_to_index_layout(layout, ctx, font,
+                                                     state->buffer, local_x,
+                                                     local_y, state->scroll_y)
+                           : text_xy_to_index(ctx, font, state->buffer, local_x,
+                                              local_y, state->scroll_y,
+                                              max_w_fallback);
     state->cursor_idx = idx;
 
     // Shift-Click extends selection
@@ -2208,8 +2955,12 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
   if (g_widget_state.active_id == id && g_widget_state.mouse_down) {
     float local_x = g_widget_state.mouse_x - state->x;
     float local_y = g_widget_state.mouse_y - state->y;
-    int idx = text_xy_to_index(ctx, font, state->buffer, local_x, local_y,
-                               state->scroll_y, state->w - 10.0f);
+    int idx = layout_ready ? text_xy_to_index_layout(layout, ctx, font,
+                                                     state->buffer, local_x,
+                                                     local_y, state->scroll_y)
+                           : text_xy_to_index(ctx, font, state->buffer, local_x,
+                                              local_y, state->scroll_y,
+                                              max_w_fallback);
     state->cursor_idx = idx;
     // Update end while keeping start as anchor
     state->selection_end = idx;
@@ -2245,49 +2996,118 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
 
       if (key == STYGIAN_KEY_BACKSPACE) {
         if (has_selection) {
-          // Delete range
-          int buf_len = strlen(state->buffer);
-          memmove(state->buffer + sel_min, state->buffer + sel_max,
-                  buf_len - sel_max + 1);
+          text_area_delete_range(state, sel_min, sel_max);
           state->cursor_idx = sel_min;
           state->selection_start = state->selection_end = sel_min;
           changed = true;
         } else if (state->cursor_idx > 0) {
-          buffer_delete(state->buffer, state->cursor_idx);
-          state->cursor_idx--;
+          int prev = text_utf8_prev_start(state->buffer, state->cursor_idx);
+          text_area_delete_range(state, prev, state->cursor_idx);
+          state->cursor_idx = prev;
           state->selection_start = state->selection_end = state->cursor_idx;
           changed = true;
         }
       } else if (key == STYGIAN_KEY_ENTER) {
         if (has_selection) {
-          int buf_len = strlen(state->buffer);
-          memmove(state->buffer + sel_min, state->buffer + sel_max,
-                  buf_len - sel_max + 1);
+          text_area_delete_range(state, sel_min, sel_max);
           state->cursor_idx = sel_min;
         }
-        buffer_insert(state->buffer, state->buffer_size, state->cursor_idx,
-                      '\n');
-        state->cursor_idx++;
-        state->selection_start = state->selection_end = state->cursor_idx;
-        changed = true;
+        {
+          int inserted = text_area_insert_span(state, state->cursor_idx, "\n", 1);
+          if (inserted > 0) {
+            state->cursor_idx += inserted;
+            state->selection_start = state->selection_end = state->cursor_idx;
+            changed = true;
+          }
+        }
       } else if (key == STYGIAN_KEY_LEFT) {
         if (state->cursor_idx > 0)
-          state->cursor_idx--;
+          state->cursor_idx =
+              text_utf8_prev_start(state->buffer, state->cursor_idx);
         if (shift)
           state->selection_end = state->cursor_idx;
         else
           state->selection_start = state->selection_end = state->cursor_idx;
       } else if (key == STYGIAN_KEY_RIGHT) {
-        if (state->buffer[state->cursor_idx] != 0)
-          state->cursor_idx++;
+        int buffer_len = text_area_buffer_length(state);
+        if (state->cursor_idx < buffer_len) {
+          state->cursor_idx =
+              text_utf8_next_end(state->buffer, buffer_len, state->cursor_idx);
+        }
         if (shift)
           state->selection_end = state->cursor_idx;
         else
           state->selection_start = state->selection_end = state->cursor_idx;
       } else if (key == STYGIAN_KEY_UP) {
-        // TODO: Line jump logic
+        if (layout_ready) {
+          uint32_t line_index = 0u;
+          const TextAreaLine *line = text_area_layout_line_for_index(
+              layout, state->cursor_idx, &line_index);
+          if (line) {
+            float target_x = text_area_line_cursor_x(layout, ctx, font, line,
+                                                     state->buffer,
+                                                     state->cursor_idx);
+            if (line_index > 0u) {
+              const TextAreaLine *target = &layout->lines[line_index - 1u];
+              state->cursor_idx = text_area_index_from_line_x(
+                  layout, ctx, font, target, state->buffer, target_x);
+            } else {
+              state->cursor_idx = line->idx_start;
+            }
+            if (shift)
+              state->selection_end = state->cursor_idx;
+            else
+              state->selection_start = state->selection_end = state->cursor_idx;
+          }
+        }
       } else if (key == STYGIAN_KEY_DOWN) {
-        // TODO: Line jump logic
+        if (layout_ready) {
+          uint32_t line_index = 0u;
+          const TextAreaLine *line = text_area_layout_line_for_index(
+              layout, state->cursor_idx, &line_index);
+          if (line) {
+            float target_x = text_area_line_cursor_x(layout, ctx, font, line,
+                                                     state->buffer,
+                                                     state->cursor_idx);
+            if ((line_index + 1u) < layout->count) {
+              const TextAreaLine *target = &layout->lines[line_index + 1u];
+              state->cursor_idx = text_area_index_from_line_x(
+                  layout, ctx, font, target, state->buffer, target_x);
+            } else {
+              state->cursor_idx = line->idx_end;
+            }
+            if (shift)
+              state->selection_end = state->cursor_idx;
+            else
+              state->selection_start = state->selection_end = state->cursor_idx;
+          }
+        }
+      } else if (key == STYGIAN_KEY_HOME) {
+        if (layout_ready) {
+          const TextAreaLine *line =
+              text_area_layout_line_for_index(layout, state->cursor_idx, NULL);
+          if (line)
+            state->cursor_idx = line->idx_start;
+        } else {
+          state->cursor_idx = 0;
+        }
+        if (shift)
+          state->selection_end = state->cursor_idx;
+        else
+          state->selection_start = state->selection_end = state->cursor_idx;
+      } else if (key == STYGIAN_KEY_END) {
+        if (layout_ready) {
+          const TextAreaLine *line =
+              text_area_layout_line_for_index(layout, state->cursor_idx, NULL);
+          if (line)
+            state->cursor_idx = line->idx_end;
+        } else {
+          state->cursor_idx = text_area_buffer_length(state);
+        }
+        if (shift)
+          state->selection_end = state->cursor_idx;
+        else
+          state->selection_start = state->selection_end = state->cursor_idx;
       } else if (key == STYGIAN_KEY_C &&
                  (g_widget_state.key_events[i].mods & STYGIAN_MOD_CTRL)) {
         // Universal Copy
@@ -2306,46 +3126,49 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
                  (g_widget_state.key_events[i].mods & STYGIAN_MOD_CTRL)) {
         // Universal Paste
         if (has_selection) {
-          int buf_len = strlen(state->buffer);
-          memmove(state->buffer + sel_min, state->buffer + sel_max,
-                  buf_len - sel_max + 1);
+          text_area_delete_range(state, sel_min, sel_max);
           state->cursor_idx = sel_min;
+          has_selection = false;
+          sel_min = sel_max = state->cursor_idx;
         }
         char *clip = stygian_clipboard_pop(ctx);
         if (clip) {
-          const char *p = clip;
-          while (*p) {
-            buffer_insert(state->buffer, state->buffer_size, state->cursor_idx,
-                          *p);
-            state->cursor_idx++;
-            p++;
+          int clip_len = (int)strlen(clip);
+          int inserted = text_area_insert_span(state, state->cursor_idx, clip,
+                                               clip_len);
+          if (inserted > 0) {
+            state->cursor_idx += inserted;
+            changed = true;
           }
           // Clipboard pop returns CRT-owned memory; free with matching runtime.
           free(clip);
           state->selection_start = state->selection_end = state->cursor_idx;
-          changed = true;
         }
       }
     }
 
     // Process Char Input
     for (int i = 0; i < g_widget_state.char_count; i++) {
-      char c = (char)g_widget_state.char_events[i];
-      if (c >= 32 && c <= 126) { // Printable ASCII for now
+      uint32_t cp = g_widget_state.char_events[i];
+      char utf8[4];
+      int utf8_len;
+      if (cp >= 32u && cp != 0x7Fu) {
+        utf8_len = text_utf8_encode(cp, utf8);
+        if (utf8_len <= 0)
+          continue;
         if (has_selection) {
-          int buf_len = strlen(state->buffer);
-          memmove(state->buffer + sel_min, state->buffer + sel_max,
-                  buf_len - sel_max + 1);
+          text_area_delete_range(state, sel_min, sel_max);
           state->cursor_idx = sel_min;
-          // state->selection_start = state->selection_end = sel_min; //
-          // handled at end
           has_selection = false;
           sel_min = sel_max = state->cursor_idx;
         }
-        buffer_insert(state->buffer, state->buffer_size, state->cursor_idx, c);
-        state->cursor_idx++;
-        state->selection_start = state->selection_end = state->cursor_idx;
-        changed = true;
+        utf8_len =
+            text_area_insert_span(state, state->cursor_idx, utf8, utf8_len);
+        if (utf8_len > 0) {
+          state->cursor_idx += utf8_len;
+          state->selection_start = state->selection_end = state->cursor_idx;
+          changed = true;
+        }
       }
     }
   }
@@ -2354,12 +3177,30 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
       (g_widget_state.scroll_dy != 0 || g_widget_state.scroll_dx != 0)) {
     state->scroll_y -= g_widget_state.scroll_dy * 20.0f;
   }
+  if (changed) {
+    layout_ready = text_area_layout_fetch_cached(
+        &layout, ctx, font, state,
+        layout_ready ? layout->show_scrollbar : (state->total_height > state->h));
+  }
+  if (layout_ready && state->cursor_idx != initial_cursor_idx) {
+    const TextAreaLine *cursor_line =
+        text_area_layout_line_for_index(layout, state->cursor_idx, NULL);
+    if (cursor_line) {
+      float line_top = cursor_line->y;
+      float line_bottom = line_top + 18.0f;
+      if (line_top < state->scroll_y) {
+        state->scroll_y = line_top;
+      } else if (line_bottom > state->scroll_y + state->h) {
+        state->scroll_y = line_bottom - state->h;
+      }
+    }
+  }
   // Clamp scroll
+  content_height = layout_ready ? layout->total_height : state->total_height;
   if (state->scroll_y < 0.0f)
     state->scroll_y = 0;
-  if (state->total_height > state->h &&
-      state->scroll_y > state->total_height - state->h)
-    state->scroll_y = state->total_height - state->h;
+  if (content_height > state->h && state->scroll_y > content_height - state->h)
+    state->scroll_y = content_height - state->h;
 
   // Render Background
   float bg_col[4] = {0.1f, 0.1f, 0.12f, 1.0f};
@@ -2376,79 +3217,114 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
 
   // Render Text Line by Line (Wrapped)
   float x_off = state->x + 5.0f;
-  bool show_scrollbar = state->total_height > state->h;
-  float max_w = state->w - (show_scrollbar ? 14.0f : 10.0f);
-  if (max_w < 20.0f)
-    max_w = 20.0f;
+  show_scrollbar =
+      layout_ready ? layout->show_scrollbar : (state->total_height > state->h);
+  if (layout_ready) {
+    uint32_t first_line = 0u;
+    uint32_t last_line = layout->count;
+    if (layout->count > 0u) {
+      int first_visible = (int)(state->scroll_y / 18.0f) - 1;
+      int visible_count = (int)(state->h / 18.0f) + 3;
+      if (first_visible < 0)
+        first_visible = 0;
+      first_line = (uint32_t)first_visible;
+      last_line = first_line + (uint32_t)visible_count;
+      if (last_line > layout->count)
+        last_line = layout->count;
+    }
 
-  TextAreaIter it;
-  iter_begin(&it, ctx, font, state->buffer, max_w);
-  const char *start, *end;
-
-  while (iter_next_line(&it, &start, &end)) {
-    // Draw visible lines
-    float line_top = it.y - 18.0f;
-    float abs_top = state->y + line_top - state->scroll_y;
-
-    if (abs_top + 18.0f > state->y && abs_top < state->y + state->h) {
+    for (uint32_t i = first_line; i < last_line; i++) {
+      const TextAreaLine *line = &layout->lines[i];
+      float abs_top = state->y + line->y - state->scroll_y;
       float lx = x_off;
 
-      // Draw Selection Rect (Block)
       if (has_selection) {
-        int idx_start = (int)(start - state->buffer);
-        int idx_end = (int)(end - state->buffer);
-
-        int intersect_min = (sel_min > idx_start) ? sel_min : idx_start;
-        int intersect_max = (sel_max < idx_end) ? sel_max : idx_end;
+        int intersect_min =
+            (sel_min > line->idx_start) ? sel_min : line->idx_start;
+        int intersect_max =
+            (sel_max < line->idx_end) ? sel_max : line->idx_end;
 
         if (intersect_min < intersect_max) {
-          // Valid intersection on this line
-          float pre_width = measure_line_lut(NULL, ctx, font, start,
-                                             state->buffer + intersect_min);
-          float sel_width =
-              measure_line_lut(NULL, ctx, font, state->buffer + intersect_min,
-                               state->buffer + intersect_max);
-
+          float pre_width = measure_line_lut(
+              layout->advance_lut, ctx, font, line->start,
+              state->buffer + intersect_min);
+          float sel_width = measure_line_lut(layout->advance_lut, ctx, font,
+                                             state->buffer + intersect_min,
+                                             state->buffer + intersect_max);
           stygian_rect(ctx, lx + pre_width, abs_top, sel_width, 18.0f, 0.2f,
                        0.4f, 0.8f, 0.5f);
         }
       }
 
-      const char *lp = start;
-      while (lp < end) {
-        char temp[2] = {*lp, 0};
-        // Re-measure for consistent placement
-        float cw = stygian_text_width(ctx, font, temp, 16.0f);
-        if (*lp == ' ' && cw < 1.0f)
-          cw = 4.0f;
+      draw_text_span(ctx, font, line->start, line->end, lx, abs_top, 0.97f,
+                     0.97f, 0.99f, 1.0f);
 
-        stygian_text(ctx, font, temp, lx, abs_top, 16.0f, 0.9f, 0.9f, 0.9f,
-                     1.0f);
-        lx += cw;
-        lp++;
+      if (state->focused && state->cursor_idx >= line->idx_start &&
+          state->cursor_idx <= line->idx_end) {
+        float cx = x_off + measure_line_lut(layout->advance_lut, ctx, font,
+                                            line->start,
+                                            state->buffer + state->cursor_idx);
+        stygian_rect(ctx, cx, abs_top, 2.0f, 16.0f, 1.0f, 1.0f, 1.0f, 1.0f);
       }
+    }
+    state->total_height = layout->total_height;
+  } else {
+    float max_w = text_area_content_width(state->w, show_scrollbar);
+    TextAreaIter it;
+    const char *start;
+    const char *end;
+    iter_begin(&it, ctx, font, state->buffer, max_w);
 
-      // Cursor
-      if (state->focused) {
-        int idx_start = (int)(start - state->buffer);
-        int idx_end = (int)(end - state->buffer);
-        if (state->cursor_idx >= idx_start && state->cursor_idx <= idx_end) {
-          float cx =
-              x_off + measure_line_lut(NULL, ctx, font, start,
-                                       state->buffer + state->cursor_idx);
-          stygian_rect(ctx, cx, abs_top, 2.0f, 16.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    while (iter_next_line(&it, &start, &end)) {
+      float line_top = it.y - 18.0f;
+      float abs_top = state->y + line_top - state->scroll_y;
+
+      if (abs_top + 18.0f > state->y && abs_top < state->y + state->h) {
+        float lx = x_off;
+
+        if (has_selection) {
+          int idx_start = (int)(start - state->buffer);
+          int idx_end = (int)(end - state->buffer);
+          int intersect_min = (sel_min > idx_start) ? sel_min : idx_start;
+          int intersect_max = (sel_max < idx_end) ? sel_max : idx_end;
+
+          if (intersect_min < intersect_max) {
+            float pre_width = measure_line_lut(
+                it.advance_lut, ctx, font, start,
+                state->buffer + intersect_min);
+            float sel_width =
+                measure_line_lut(it.advance_lut, ctx, font,
+                                 state->buffer + intersect_min,
+                                 state->buffer + intersect_max);
+
+            stygian_rect(ctx, lx + pre_width, abs_top, sel_width, 18.0f, 0.2f,
+                         0.4f, 0.8f, 0.5f);
+          }
+        }
+
+        draw_text_span(ctx, font, start, end, lx, abs_top, 0.97f, 0.97f, 0.99f,
+                       1.0f);
+
+        if (state->focused) {
+          int idx_start = (int)(start - state->buffer);
+          int idx_end = (int)(end - state->buffer);
+          if (state->cursor_idx >= idx_start && state->cursor_idx <= idx_end) {
+            float cx = x_off + measure_line_lut(
+                                   it.advance_lut, ctx, font, start,
+                                   state->buffer + state->cursor_idx);
+            stygian_rect(ctx, cx, abs_top, 2.0f, 16.0f, 1.0f, 1.0f, 1.0f,
+                         1.0f);
+          }
         }
       }
     }
+    state->total_height = it.y;
   }
 
   stygian_clip_pop(ctx);
-  // Auto-scroll logic could be added here
-  state->total_height = it.y;
 
   stygian_scrollbar_v(ctx, state->x + state->w - 8.0f, state->y + 2.0f, 6.0f,
                       state->h - 4.0f, state->total_height, &state->scroll_y);
-
   return changed;
 }
 
@@ -2644,6 +3520,12 @@ static void draw_orthogonal_wire(StygianContext *ctx, float x1, float y1,
   draw_straight_wire(ctx, mid_x, y2, x2, y2, thick, color);
 }
 
+static void draw_line_wire(StygianContext *ctx, float x1, float y1, float x2,
+                           float y2, float thick, float color[4]) {
+  stygian_line(ctx, x1, y1, x2, y2, thick, color[0], color[1], color[2],
+               color[3]);
+}
+
 static void graph_view_bounds(const StygianGraphState *state, float padding,
                               float *l, float *t, float *r, float *b) {
   float pad = (padding > 0.0f) ? padding : 0.0f;
@@ -2655,6 +3537,9 @@ static void graph_view_bounds(const StygianGraphState *state, float padding,
 
 void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
                               StygianNodeBuffers *data, int count) {
+  uint32_t id = widget_id(state->x, state->y, "node_graph");
+  bool middle_down =
+      stygian_mouse_down(stygian_get_window(ctx), STYGIAN_MOUSE_MIDDLE);
   // 1. Handle Input (Pan / Zoom)
   widget_register_region_internal(state->x, state->y, state->w, state->h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES |
@@ -2664,8 +3549,10 @@ void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
                                state->y, state->w, state->h);
 
   // Pan: Middle Mouse
-  if (hovered &&
-      stygian_mouse_down(stygian_get_window(ctx), STYGIAN_MOUSE_MIDDLE)) {
+  if (hovered && middle_down) {
+    // middle-drag needs a live owner or move events stop waking frames
+    g_widget_state.active_id = id;
+    state->dragging_id = 0;
     state->pan_x += g_widget_state.mouse_dx / state->zoom;
     state->pan_y += g_widget_state.mouse_dy / state->zoom;
   }
@@ -2695,8 +3582,7 @@ void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
   }
 
   // Node Dragging Logic
-  if (hovered &&
-      !stygian_mouse_down(stygian_get_window(ctx), STYGIAN_MOUSE_MIDDLE)) {
+  if (hovered && !middle_down) {
     if (widget_mouse_pressed()) {
       // Try to pick a node
       int pick =
@@ -2704,15 +3590,18 @@ void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
                                   (float)g_widget_state.mouse_y);
       if (pick >= 0) {
         state->dragging_id = pick + 1; // 1-based
+        g_widget_state.active_id = id;
       }
     }
   }
 
-  if (!g_widget_state.mouse_down) {
+  if (!g_widget_state.mouse_down && !middle_down) {
     state->dragging_id = 0;
+    if (g_widget_state.active_id == id)
+      g_widget_state.active_id = 0u;
   }
 
-  if (state->dragging_id > 0) {
+  if (state->dragging_id > 0 && g_widget_state.active_id == id) {
     int idx = state->dragging_id - 1;
     data->x[idx] += g_widget_state.mouse_dx / state->zoom;
     data->y[idx] += g_widget_state.mouse_dy / state->zoom;
@@ -2729,7 +3618,8 @@ void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
   float view_t = 0.0f;
   float view_r = 0.0f;
   float view_b = 0.0f;
-  graph_view_bounds(state, 0.0f, &view_l, &view_t, &view_r, &view_b);
+  // edge-pop looks cheap in a graph editor, so cull a bit loose
+  graph_view_bounds(state, 96.0f, &view_l, &view_t, &view_r, &view_b);
 
   // Linear Cull
   for (int i = 0; i < count; ++i) {
@@ -2751,8 +3641,11 @@ void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
   stygian_rect(ctx, state->x, state->y, state->w, state->h, 0.05f, 0.05f, 0.05f,
                1.0f);
 
-  // Grid Lines (default)
-  stygian_graph_draw_grid(ctx, state, 100.0f, 20.0f, 0.15f, 0.15f, 0.15f, 0.5f);
+  // benchmark mode shouldn't keep paying for graph paper
+  if (!state->disable_grid) {
+    stygian_graph_draw_grid(ctx, state, 100.0f, 20.0f, 0.15f, 0.15f, 0.15f,
+                            0.5f);
+  }
 }
 
 bool stygian_node_graph_next(StygianContext *ctx, StygianGraphState *state,
@@ -2787,6 +3680,8 @@ void stygian_graph_link(StygianContext *ctx, const StygianGraphState *state,
   int style = state ? state->wire_style : STYGIAN_WIRE_SMOOTH;
   if (style == STYGIAN_WIRE_SHARP) {
     draw_orthogonal_wire(ctx, x1, y1, x2, y2, thick, color);
+  } else if (style == STYGIAN_WIRE_LINE) {
+    draw_line_wire(ctx, x1, y1, x2, y2, thick, color);
   } else {
     draw_cubic_bezier(ctx, x1, y1, x2, y2, thick, color);
   }
@@ -2953,6 +3848,10 @@ void stygian_graph_draw_grid(StygianContext *ctx,
   (void)minor;
   if (!ctx || !state || major <= 0.0f)
     return;
+  // zoomed-out graph paper turns into noisy overdraw fast, so coarsen it early
+  while ((major * state->zoom) < 56.0f) {
+    major *= 2.0f;
+  }
   float world_l = 0.0f;
   float world_t = 0.0f;
   float world_r = 0.0f;

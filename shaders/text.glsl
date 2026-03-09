@@ -26,10 +26,10 @@ vec4 render_text(vec2 localPos, vec2 size, vec4 uv, vec4 color, float blend) {
     // Multi-channel signed distance field decode
     float sd = max(min(mtsdf.r, mtsdf.g), min(max(mtsdf.r, mtsdf.g), mtsdf.b));
     
-    // Screen-space anti-aliasing (msdfgen-style)
-    vec2 unitRange = vec2(PX_RANGE) / ATLAS_SIZE;
-    vec2 screenTexSize = vec2(1.0) / fwidth(texCoord);
-    float screenPxRange = max(0.5 * dot(unitRange, screenTexSize), 1.0);
+    // glyph quads are axis-aligned here, so derive the range from quad size
+    vec2 glyphTexelSpan = max(abs(uv.zw - uv.xy) * ATLAS_SIZE, vec2(1.0));
+    vec2 axisPxRange = vec2(PX_RANGE) * size / glyphTexelSpan;
+    float screenPxRange = max(0.5 * (axisPxRange.x + axisPxRange.y), 1.0);
     float alpha = clamp((sd - 0.5) * screenPxRange + 0.5, 0.0, 1.0);
     
     return vec4(color.rgb, alpha * color.a * blend);

@@ -136,7 +136,27 @@ For quickwindow, switch by target:
 Changing only the backend enum in C source can still compile while remaining
 mismatched at runtime.
 
-## 6. Build Entrypoints
+## 6. Per-Monitor ICC (Windows)
+
+- Win32 contexts auto-track the monitor ICC profile by default.
+- Moving a window between monitors re-evaluates and reapplies output transform.
+- ICC load path now reads primaries + TRCs and applies D65<->D50 adaptation for
+  ICC matrix profiles.
+- Monitor rebind is triggered by Win32 display/window change messages.
+- API controls:
+  - `stygian_get_output_icc_auto`
+  - `stygian_set_output_icc_auto`
+  - `stygian_refresh_output_icc_from_monitor`
+- Calling `stygian_set_output_color_space` or
+  `stygian_set_output_icc_profile` switches to manual mode for that context.
+
+Manual dual-monitor check:
+
+- Set `STYGIAN_ICC_TRACE=1`.
+- Run `build\quickwindow.exe` or `build\quickwindow_vk.exe`.
+- Drag between monitors and verify profile-path switch logs in console.
+
+## 7. Build Entrypoints
 
 Manifest source of truth:
 - `compile/targets.json`

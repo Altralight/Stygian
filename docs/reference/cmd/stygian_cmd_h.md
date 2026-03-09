@@ -1,55 +1,83 @@
 # stygian_cmd.h Reference
 
-This page documents command-buffer APIs in `include/stygian_cmd.h`.
+This page documents the command-buffer API in `include/stygian_cmd.h`.
 
 ## Purpose
 
-Command buffers decouple mutation production from SoA writes.
-Producers emit commands; core applies at commit boundary.
+Command buffers let multiple producers stage retained mutations without writing directly into the live SoA state. The runtime applies them during the deterministic commit boundary.
 
-## Types
+## Buffer Lifecycle
 
-- `StygianCmdBuffer` (opaque)
-- `StygianCmdPropertyId` (property identity for deterministic merge)
+```c
+StygianCmdBuffer *stygian_cmd_begin(StygianContext *ctx, uint32_t source_tag);
+void stygian_cmd_discard(StygianCmdBuffer *buffer);
+bool stygian_cmd_submit(StygianContext *ctx, StygianCmdBuffer *buffer);
+```
 
-## Lifecycle
+`stygian_cmd_begin`
 
-- `stygian_cmd_begin(ctx, source_tag)`
-- `stygian_cmd_submit(ctx, buffer)`
-- `stygian_cmd_discard(buffer)`
+- Starts a command buffer for one producer.
+- `source_tag` is carried into runtime accounting and diagnostics.
+- Returns `NULL` on allocation or state failure.
 
-Contract:
-- A buffer is owned by the producer that created it.
-- Submitted buffers are immutable.
-- Submit during commit is rejected.
+`stygian_cmd_discard`
 
-## Emit APIs
+- Drops a buffer without committing it.
+- Safe way to abandon a producer path after partial emission.
 
-Core properties:
-- `stygian_cmd_set_bounds`
-- `stygian_cmd_set_color`
-- `stygian_cmd_set_border`
-- `stygian_cmd_set_radius`
-- `stygian_cmd_set_type`
-- `stygian_cmd_set_visible`
-- `stygian_cmd_set_z`
-- `stygian_cmd_set_texture`
+`stygian_cmd_submit`
 
-Effects:
-- `stygian_cmd_set_shadow`
-- `stygian_cmd_set_gradient`
-- `stygian_cmd_set_hover`
-- `stygian_cmd_set_blend`
-- `stygian_cmd_set_blur`
-- `stygian_cmd_set_glow`
+- Freezes and submits the buffer to the runtime queue.
+- Returns `false` if submission is rejected.
+- Notes:
+  - Submitted buffers must not be mutated afterward.
+  - Submit during an invalid runtime state is rejected rather than silently applied.
 
-## Determinism Guarantees
+## Property Emitters
 
-Conflicts are resolved deterministically by commit ordering and property id.
-Same input command stream must produce same final SoA state.
+```c
+bool stygian_cmd_set_bounds(StygianCmdBuffer *buffer, StygianElement element,
+                            float x, float y, float w, float h);
+bool stygian_cmd_set_color(StygianCmdBuffer *buffer, StygianElement element,
+                           float r, float g, float b, float a);
+bool stygian_cmd_set_border(StygianCmdBuffer *buffer, StygianElement element,
+                            float r, float g, float b, float a);
+bool stygian_cmd_set_radius(StygianCmdBuffer *buffer, StygianElement element,
+                            float tl, float tr, float br, float bl);
+bool stygian_cmd_set_type(StygianCmdBuffer *buffer, StygianElement element,
+                          StygianType type);
+bool stygian_cmd_set_visible(StygianCmdBuffer *buffer, StygianElement element,
+                             bool visible);
+bool stygian_cmd_set_z(StygianCmdBuffer *buffer, StygianElement element,
+                       float z);
+bool stygian_cmd_set_texture(StygianCmdBuffer *buffer, StygianElement element,
+                             StygianTexture texture, float u0, float v0,
+                             float u1, float v1);
+bool stygian_cmd_set_shadow(StygianCmdBuffer *buffer, StygianElement element,
+                            float offset_x, float offset_y, float blur,
+                            float spread, float r, float g, float b, float a);
+bool stygian_cmd_set_gradient(StygianCmdBuffer *buffer, StygianElement element,
+                              float angle, float r1, float g1, float b1,
+                              float a1, float r2, float g2, float b2,
+                              float a2);
+bool stygian_cmd_set_hover(StygianCmdBuffer *buffer, StygianElement element,
+                           float hover);
+bool stygian_cmd_set_blend(StygianCmdBuffer *buffer, StygianElement element,
+                           float blend);
+bool stygian_cmd_set_blur(StygianCmdBuffer *buffer, StygianElement element,
+                          float blur_radius);
+bool stygian_cmd_set_glow(StygianCmdBuffer *buffer, StygianElement element,
+                          float intensity);
+```
 
-## Error and Overflow Behavior
+All setters:
 
-- Queue overflow drops commands and logs errors.
-- Invalid element/property writes are rejected and logged.
-- Runtime continues; no hard process abort on command errors.
+- Return `true` when the command was recorded.
+- Return `false` when the buffer is invalid, full, or the element/property write is rejected.
+- Preserve runtime safety: invalid handles are rejected instead of corrupting SoA state.
+
+## Notes
+
+- `StygianCmdPropertyId` exists so the runtime can merge and resolve property conflicts deterministically.
+- Queue overflow and invalid writes are runtime errors, but they are handled as recoverable misuse rather than process-aborting faults.
+- The command-buffer path is the right place for producer-thread work. Direct SoA mutation should stay on the core commit path.

@@ -1,0 +1,31 @@
+name: macOS
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  macos-build:
+    name: macOS Build Checks
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install jq zstd
+
+      - name: Build tier targets
+        run: |
+          chmod +x compile/run.sh compile/macos/build.sh
+          compile/run.sh --target tier1_safety
+          compile/run.sh --target tier2_runtime
+          compile/run.sh --target tier3_misuse
+          compile/run.sh --target calculator_mini
+
+      # macOS GitHub runners do not provide a reliable headless Cocoa/OpenGL
+      # display path, so this job stays compile-only for now.

@@ -1,5 +1,6 @@
 #include "../include/stygian.h"
 #include "../window/stygian_window.h"
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -191,6 +192,97 @@ static void test_transient_cleanup_determinism(TestEnv *env) {
   stygian_end_frame(env->ctx);
 }
 
+static void test_color_icc_d50_adaptation_roundtrip(void) {
+  static const float srgb_to_xyz[9] = {
+      0.4124564f, 0.3575761f, 0.1804375f, 0.2126729f, 0.7151522f,
+      0.0721750f, 0.0193339f, 0.1191920f, 0.9503041f,
+  };
+  StygianColorProfile src = {0};
+  StygianColorProfile icc_like = {0};
+  float in_r = 0.62f;
+  float in_g = 0.44f;
+  float in_b = 0.31f;
+  float r = in_r;
+  float g = in_g;
+  float b = in_b;
+  float shifted;
+  float roundtrip_err;
+
+  stygian_color_profile_init_builtin(&src, STYGIAN_COLOR_SPACE_SRGB);
+  CHECK(stygian_color_profile_init_custom(&icc_like, "ICC synthetic",
+                                          srgb_to_xyz, true, 2.4f),
+        "custom ICC-like profile init succeeds");
+
+  stygian_color_transform_rgb_f32(&src, &icc_like, &r, &g, &b);
+  shifted = fabsf(r - in_r) + fabsf(g - in_g) + fabsf(b - in_b);
+  CHECK(shifted > 0.0005f,
+        "ICC-like transform applies whitepoint adaptation shift");
+
+  stygian_color_transform_rgb_f32(&icc_like, &src, &r, &g, &b);
+  roundtrip_err = fabsf(r - in_r) + fabsf(g - in_g) + fabsf(b - in_b);
+  CHECK(roundtrip_err < 0.02f,
+        "ICC-like whitepoint adaptation roundtrip remains stable");
+}
+
+static void test_output_icc_auto_controls(TestEnv *env) {
+  bool refreshed = false;
+  StygianICCInfo info;
+
+  memset(&info, 0, sizeof(info));
+#ifdef _WIN32
+  CHECK(stygian_get_output_icc_auto(env->ctx),
+        "output ICC auto defaults enabled on win32");
+  CHECK(stygian_set_output_icc_auto(env->ctx, true),
+        "output ICC auto enable succeeds");
+  CHECK(stygian_get_output_icc_auto(env->ctx),
+        "output ICC auto reports enabled");
+  refreshed = stygian_refresh_output_icc_from_monitor(env->ctx, &info);
+  CHECK(true, "output ICC monitor refresh call completed");
+  if (refreshed) {
+    CHECK(info.loaded, "output ICC monitor refresh returns loaded profile info");
+  } else {
+    CHECK(true, "output ICC monitor refresh tolerates unavailable profile");
+  }
+#else
+  CHECK(!stygian_get_output_icc_auto(env->ctx),
+        "output ICC auto defaults disabled off win32");
+  CHECK(!stygian_set_output_icc_auto(env->ctx, true),
+        "output ICC auto enable unsupported off win32");
+#endif
+
+  CHECK(stygian_set_output_color_space(env->ctx, STYGIAN_COLOR_SPACE_SRGB),
+        "manual output color space set succeeds");
+  CHECK(!stygian_get_output_icc_auto(env->ctx),
+        "manual output color space set disables auto ICC");
+  CHECK(stygian_set_output_icc_auto(env->ctx, false),
+        "output ICC auto disable succeeds");
+  CHECK(!stygian_get_output_icc_auto(env->ctx),
+        "output ICC auto reports disabled");
+}
+
+#ifdef _WIN32
+static void test_display_change_serial(TestEnv *env) {
+  HWND hwnd;
+  uint32_t before;
+  uint32_t after;
+  if (!env || !env->window)
+    return;
+  hwnd = (HWND)stygian_window_native_handle(env->window);
+  CHECK(hwnd != NULL, "display serial test has native window handle");
+  if (!hwnd)
+    return;
+  before = stygian_window_get_display_change_serial(env->window);
+  SendMessage(hwnd, WM_DISPLAYCHANGE, 0, 0);
+  after = stygian_window_get_display_change_serial(env->window);
+  CHECK(after > before, "display change serial increments on WM_DISPLAYCHANGE");
+}
+#else
+static void test_display_change_serial(TestEnv *env) {
+  (void)env;
+  CHECK(true, "display serial test skipped on non-Windows");
+}
+#endif
+
 #ifdef _WIN32
 static void pump_window_events(StygianWindow *window, int loops, DWORD sleep_ms) {
   int i;
@@ -201,6 +293,242 @@ static void pump_window_events(StygianWindow *window, int loops, DWORD sleep_ms)
     if (sleep_ms > 0)
       Sleep(sleep_ms);
   }
+}
+
+typedef struct BorderlessWorkAreaProbe {
+  RECT work_rect;
+  RECT window_rect;
+  POINT client_tl;
+  POINT client_br;
+  bool geometry_ok;
+  bool matches_work_area;
+  bool non_topmost;
+} BorderlessWorkAreaProbe;
+
+static bool wait_for_window_maximized_state(StygianWindow *window, bool expected,
+                                            int loops, DWORD sleep_ms) {
+  int i;
+  if (!window)
+    return false;
+  for (i = 0; i < loops; i++) {
+    StygianEvent event;
+    while (stygian_window_poll_event(window, &event)) {
+    }
+    if (stygian_window_is_maximized(window) == expected)
+      return true;
+    if (sleep_ms > 0)
+      Sleep(sleep_ms);
+  }
+  return stygian_window_is_maximized(window) == expected;
+}
+
+static bool probe_borderless_work_area(StygianWindow *window,
+                                       BorderlessWorkAreaProbe *out_probe) {
+  BorderlessWorkAreaProbe probe;
+  HWND hwnd;
+  HMONITOR monitor;
+  MONITORINFO monitor_info;
+  RECT client_rect;
+  LONG_PTR ex_style;
+  bool window_rect_ok = false;
+  bool client_rect_ok = false;
+  if (!window || !out_probe)
+    return false;
+
+  memset(&probe, 0, sizeof(probe));
+  memset(&monitor_info, 0, sizeof(monitor_info));
+  memset(&client_rect, 0, sizeof(client_rect));
+  monitor_info.cbSize = sizeof(monitor_info);
+
+  hwnd = (HWND)stygian_window_native_handle(window);
+  monitor = (hwnd != NULL) ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                           : NULL;
+  window_rect_ok = (hwnd != NULL) && (GetWindowRect(hwnd, &probe.window_rect) != 0);
+  if (hwnd != NULL && GetClientRect(hwnd, &client_rect) != 0) {
+    probe.client_tl.x = client_rect.left;
+    probe.client_tl.y = client_rect.top;
+    probe.client_br.x = client_rect.right;
+    probe.client_br.y = client_rect.bottom;
+    client_rect_ok = (ClientToScreen(hwnd, &probe.client_tl) != 0) &&
+                     (ClientToScreen(hwnd, &probe.client_br) != 0);
+  }
+
+  probe.geometry_ok =
+      (hwnd != NULL) && (monitor != NULL) &&
+      (GetMonitorInfo(monitor, &monitor_info) != 0) &&
+      (window_rect_ok || client_rect_ok);
+  if (probe.geometry_ok) {
+    bool window_within_work_area;
+    bool client_within_work_area;
+    probe.work_rect = monitor_info.rcWork;
+    window_within_work_area =
+        (probe.window_rect.left >= probe.work_rect.left) &&
+        (probe.window_rect.top >= probe.work_rect.top) &&
+        (probe.window_rect.right <= probe.work_rect.right) &&
+        (probe.window_rect.bottom <= probe.work_rect.bottom);
+    client_within_work_area =
+        (probe.client_tl.x >= probe.work_rect.left) &&
+        (probe.client_tl.y >= probe.work_rect.top) &&
+        (probe.client_br.x <= probe.work_rect.right) &&
+        (probe.client_br.y <= probe.work_rect.bottom);
+    probe.matches_work_area = window_within_work_area || client_within_work_area;
+    ex_style = (hwnd != NULL) ? GetWindowLongPtr(hwnd, GWL_EXSTYLE) : 0;
+    probe.non_topmost = (ex_style & WS_EX_TOPMOST) == 0;
+  }
+
+  *out_probe = probe;
+  return probe.geometry_ok;
+}
+
+static bool wait_for_borderless_work_area_match(StygianWindow *window,
+                                                BorderlessWorkAreaProbe *out_probe,
+                                                int loops, DWORD sleep_ms) {
+  BorderlessWorkAreaProbe probe;
+  int i;
+  if (!window || !out_probe)
+    return false;
+  memset(&probe, 0, sizeof(probe));
+  for (i = 0; i < loops; i++) {
+    StygianEvent event;
+    while (stygian_window_poll_event(window, &event)) {
+    }
+    if (probe_borderless_work_area(window, &probe) && probe.matches_work_area) {
+      *out_probe = probe;
+      return true;
+    }
+    if (sleep_ms > 0)
+      Sleep(sleep_ms);
+  }
+  (void)probe_borderless_work_area(window, &probe);
+  *out_probe = probe;
+  return false;
+}
+
+static void log_borderless_work_area_mismatch(const BorderlessWorkAreaProbe *probe) {
+  if (!probe)
+    return;
+  fprintf(stderr,
+          "[tier2] borderless maximize mismatch "
+          "work=(%ld,%ld)-(%ld,%ld) "
+          "window=(%ld,%ld)-(%ld,%ld) "
+          "client=(%ld,%ld)-(%ld,%ld)\n",
+          probe->work_rect.left, probe->work_rect.top, probe->work_rect.right,
+          probe->work_rect.bottom, probe->window_rect.left,
+          probe->window_rect.top, probe->window_rect.right,
+          probe->window_rect.bottom, probe->client_tl.x, probe->client_tl.y,
+          probe->client_br.x, probe->client_br.y);
+}
+
+typedef struct MonitorICCProbe {
+  RECT rect;
+  char icc_path[260];
+  bool has_icc_path;
+} MonitorICCProbe;
+
+typedef struct MonitorICCProbeState {
+  MonitorICCProbe monitors[8];
+  uint32_t count;
+} MonitorICCProbeState;
+
+static BOOL CALLBACK monitor_icc_enum_proc(HMONITOR monitor, HDC hdc,
+                                           LPRECT rect, LPARAM user_data) {
+  MonitorICCProbeState *state = (MonitorICCProbeState *)user_data;
+  MONITORINFOEXW monitor_info;
+  HDC monitor_dc = NULL;
+  DWORD profile_len = 0u;
+  WCHAR *profile_w = NULL;
+  int utf8_len = 0;
+  MonitorICCProbe *probe;
+  (void)hdc;
+  if (!state || state->count >= 8u)
+    return FALSE;
+  probe = &state->monitors[state->count];
+  memset(probe, 0, sizeof(*probe));
+  if (rect) {
+    probe->rect = *rect;
+  }
+  memset(&monitor_info, 0, sizeof(monitor_info));
+  monitor_info.cbSize = sizeof(monitor_info);
+  if (!GetMonitorInfoW(monitor, (MONITORINFO *)&monitor_info)) {
+    state->count++;
+    return TRUE;
+  }
+  probe->rect = monitor_info.rcMonitor;
+  monitor_dc = CreateDCW(L"DISPLAY", monitor_info.szDevice, NULL, NULL);
+  if (!monitor_dc) {
+    state->count++;
+    return TRUE;
+  }
+  if (GetICMProfileW(monitor_dc, &profile_len, NULL) && profile_len > 0u) {
+    profile_w = (WCHAR *)malloc((size_t)profile_len * sizeof(WCHAR));
+    if (profile_w &&
+        GetICMProfileW(monitor_dc, &profile_len, profile_w) &&
+        profile_w[0] != L'\0') {
+      utf8_len = WideCharToMultiByte(CP_UTF8, 0, profile_w, -1, probe->icc_path,
+                                     (int)sizeof(probe->icc_path), NULL, NULL);
+      if (utf8_len > 0) {
+        probe->has_icc_path = true;
+      }
+    }
+  }
+  if (profile_w) {
+    free(profile_w);
+  }
+  DeleteDC(monitor_dc);
+  state->count++;
+  return TRUE;
+}
+
+static void test_dual_monitor_icc_adaptation(TestEnv *env) {
+  MonitorICCProbeState state;
+  int center_x0;
+  int center_y0;
+  int center_x1;
+  int center_y1;
+  bool monitor_pair_ready = false;
+  StygianICCInfo info0;
+  StygianICCInfo info1;
+
+  if (!env || !env->ctx || !env->window)
+    return;
+
+  memset(&state, 0, sizeof(state));
+  EnumDisplayMonitors(NULL, NULL, monitor_icc_enum_proc, (LPARAM)&state);
+  if (state.count < 2u) {
+    CHECK(true, "dual-monitor ICC adaptation skipped (single monitor)");
+    return;
+  }
+
+  monitor_pair_ready = state.monitors[0].has_icc_path && state.monitors[1].has_icc_path &&
+                       strcmp(state.monitors[0].icc_path,
+                              state.monitors[1].icc_path) != 0;
+  if (!monitor_pair_ready) {
+    CHECK(true, "dual-monitor ICC adaptation skipped (profiles same/unavailable)");
+    return;
+  }
+
+  center_x0 = (state.monitors[0].rect.left + state.monitors[0].rect.right) / 2 - 200;
+  center_y0 = (state.monitors[0].rect.top + state.monitors[0].rect.bottom) / 2 - 150;
+  center_x1 = (state.monitors[1].rect.left + state.monitors[1].rect.right) / 2 - 200;
+  center_y1 = (state.monitors[1].rect.top + state.monitors[1].rect.bottom) / 2 - 150;
+
+  CHECK(stygian_set_output_icc_auto(env->ctx, true),
+        "dual-monitor ICC adaptation auto enable succeeds");
+
+  stygian_window_set_position(env->window, center_x0, center_y0);
+  pump_window_events(env->window, 60, 8);
+  memset(&info0, 0, sizeof(info0));
+  CHECK(stygian_refresh_output_icc_from_monitor(env->ctx, &info0),
+        "dual-monitor ICC adaptation refresh on monitor 0 succeeds");
+
+  stygian_window_set_position(env->window, center_x1, center_y1);
+  pump_window_events(env->window, 60, 8);
+  memset(&info1, 0, sizeof(info1));
+  CHECK(stygian_refresh_output_icc_from_monitor(env->ctx, &info1),
+        "dual-monitor ICC adaptation refresh on monitor 1 succeeds");
+
+  CHECK(strcmp(info0.path, info1.path) != 0,
+        "dual-monitor ICC adaptation switches profile path across monitors");
 }
 
 static void test_borderless_maximize_uses_work_area(void) {
@@ -214,8 +542,9 @@ static void test_borderless_maximize_uses_work_area(void) {
   StygianConfig cfg;
   StygianWindow *window = NULL;
   StygianContext *ctx = NULL;
+  BorderlessWorkAreaProbe probe;
   bool maximized = false;
-  int i;
+  bool restored = false;
 
   memset(&cfg, 0, sizeof(cfg));
   window = stygian_window_create(&win_cfg);
@@ -235,94 +564,78 @@ static void test_borderless_maximize_uses_work_area(void) {
   }
 
   stygian_window_maximize(window);
-  for (i = 0; i < 240; i++) {
-    StygianEvent event;
-    while (stygian_window_poll_event(window, &event)) {
-    }
-    if (stygian_window_is_maximized(window)) {
-      maximized = true;
-      break;
-    }
-    Sleep(8);
-  }
+  maximized = wait_for_window_maximized_state(window, true, 240, 8);
   CHECK(maximized, "borderless maximize reaches maximized state");
 
   if (maximized) {
-    for (i = 0; i < 120; i++) {
-      StygianEvent event;
-      while (stygian_window_poll_event(window, &event)) {
-      }
-      Sleep(8);
+    CHECK(wait_for_borderless_work_area_match(window, &probe, 240, 8),
+          "borderless maximize monitor geometry query succeeds");
+    if (probe.geometry_ok) {
+      if (!probe.matches_work_area)
+        log_borderless_work_area_mismatch(&probe);
+      CHECK(probe.matches_work_area, "borderless maximize uses monitor work area");
+      CHECK(probe.non_topmost, "borderless maximize keeps window non-topmost");
     }
-
-    HWND hwnd = (HWND)stygian_window_native_handle(window);
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO monitor_info;
-    RECT window_rect;
-    RECT client_rect;
-    POINT client_tl;
-    POINT client_br;
-    LONG_PTR ex_style;
-    bool window_rect_ok = false;
-    bool client_rect_ok = false;
-    bool geometry_ok = false;
-    bool restored = false;
-
-    memset(&monitor_info, 0, sizeof(monitor_info));
-    memset(&window_rect, 0, sizeof(window_rect));
-    memset(&client_rect, 0, sizeof(client_rect));
-    memset(&client_tl, 0, sizeof(client_tl));
-    memset(&client_br, 0, sizeof(client_br));
-    monitor_info.cbSize = sizeof(monitor_info);
-    window_rect_ok = (hwnd != NULL) && (GetWindowRect(hwnd, &window_rect) != 0);
-    if (hwnd != NULL && GetClientRect(hwnd, &client_rect) != 0) {
-      client_tl.x = client_rect.left;
-      client_tl.y = client_rect.top;
-      client_br.x = client_rect.right;
-      client_br.y = client_rect.bottom;
-      client_rect_ok = (ClientToScreen(hwnd, &client_tl) != 0) &&
-                       (ClientToScreen(hwnd, &client_br) != 0);
-    }
-    geometry_ok =
-        (hwnd != NULL) && (monitor != NULL) &&
-        (GetMonitorInfo(monitor, &monitor_info) != 0) &&
-        (window_rect_ok || client_rect_ok);
-    CHECK(geometry_ok, "borderless maximize monitor geometry query succeeds");
-    if (geometry_ok) {
-      bool window_within_work_area =
-          (window_rect.left >= monitor_info.rcWork.left) &&
-          (window_rect.top >= monitor_info.rcWork.top) &&
-          (window_rect.right <= monitor_info.rcWork.right) &&
-          (window_rect.bottom <= monitor_info.rcWork.bottom);
-      bool client_within_work_area =
-          (client_tl.x >= monitor_info.rcWork.left) &&
-          (client_tl.y >= monitor_info.rcWork.top) &&
-          (client_br.x <= monitor_info.rcWork.right) &&
-          (client_br.y <= monitor_info.rcWork.bottom);
-      bool matches_work_area =
-          window_within_work_area || client_within_work_area;
-      CHECK(matches_work_area, "borderless maximize uses monitor work area");
-    }
-
-    ex_style = (hwnd != NULL) ? GetWindowLongPtr(hwnd, GWL_EXSTYLE) : 0;
-    CHECK((ex_style & WS_EX_TOPMOST) == 0,
-          "borderless maximize keeps window non-topmost");
 
     stygian_window_restore(window);
-    for (i = 0; i < 240; i++) {
-      StygianEvent event;
-      while (stygian_window_poll_event(window, &event)) {
-      }
-      if (!stygian_window_is_maximized(window)) {
-        restored = true;
-        break;
-      }
-      Sleep(8);
-    }
+    restored = wait_for_window_maximized_state(window, false, 240, 8);
     CHECK(restored, "borderless restore clears maximized state");
   }
 
   stygian_destroy(ctx);
+  stygian_window_destroy(window);
+}
+
+static void test_borderless_manual_rect_apply_repeatability(void) {
+  StygianWindowConfig cfg = {
+      .width = 540,
+      .height = 360,
+      .title = "stygian_tier2_borderless_rect_apply",
+      .flags = STYGIAN_WINDOW_OPENGL | STYGIAN_WINDOW_RESIZABLE |
+               STYGIAN_WINDOW_BORDERLESS | STYGIAN_WINDOW_CENTERED,
+  };
+  StygianWindow *window = stygian_window_create(&cfg);
+  int pass;
+
+  CHECK(window != NULL, "borderless rect-apply fixture window created");
+  if (!window)
+    return;
+
+  for (pass = 0; pass < 4; pass++) {
+    BorderlessWorkAreaProbe probe;
+    bool maximized;
+    bool restored;
+
+    stygian_window_maximize(window);
+    maximized = wait_for_window_maximized_state(window, true, 240, 8);
+    if (!maximized) {
+      fprintf(stderr, "[tier2] rect-apply pass %d failed to maximize\n", pass);
+    }
+    CHECK(maximized, "borderless rect apply reaches maximized state repeatedly");
+    if (!maximized)
+      break;
+
+    CHECK(wait_for_borderless_work_area_match(window, &probe, 240, 8),
+          "borderless rect apply geometry query succeeds repeatedly");
+    if (probe.geometry_ok) {
+      if (!probe.matches_work_area)
+        log_borderless_work_area_mismatch(&probe);
+      CHECK(probe.matches_work_area,
+            "borderless rect apply stays within monitor work area repeatedly");
+      CHECK(probe.non_topmost,
+            "borderless rect apply stays non-topmost repeatedly");
+    }
+
+    stygian_window_restore(window);
+    restored = wait_for_window_maximized_state(window, false, 240, 8);
+    if (!restored) {
+      fprintf(stderr, "[tier2] rect-apply pass %d failed to restore\n", pass);
+    }
+    CHECK(restored, "borderless rect apply restores repeatedly");
+    if (!restored)
+      break;
+  }
+
   stygian_window_destroy(window);
 }
 
@@ -491,6 +804,10 @@ static void test_borderless_style_routing(void) {
   CHECK(true, "borderless style routing check skipped on non-Windows");
 }
 
+static void test_borderless_manual_rect_apply_repeatability(void) {
+  CHECK(true, "borderless rect-apply repeatability check skipped on non-Windows");
+}
+
 static void test_titlebar_behavior_and_actions(void) {
   CHECK(true, "titlebar behavior checks skipped on non-Windows");
 }
@@ -498,6 +815,7 @@ static void test_titlebar_behavior_and_actions(void) {
 
 int main(void) {
   TestEnv env;
+  test_color_icc_d50_adaptation_roundtrip();
   if (!test_env_init(&env)) {
     fprintf(stderr, "[ERROR] failed to initialize tier2 runtime test env\n");
     return 2;
@@ -507,7 +825,13 @@ int main(void) {
   test_overlay_invalidation_isolated(&env);
   test_clip_runtime_behavior(&env);
   test_transient_cleanup_determinism(&env);
+  test_output_icc_auto_controls(&env);
+  test_display_change_serial(&env);
+#ifdef _WIN32
+  test_dual_monitor_icc_adaptation(&env);
+#endif
   test_borderless_maximize_uses_work_area();
+  test_borderless_manual_rect_apply_repeatability();
   test_borderless_style_routing();
   test_titlebar_behavior_and_actions();
 

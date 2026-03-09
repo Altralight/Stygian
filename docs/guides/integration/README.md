@@ -6,3 +6,4 @@ This folder contains embed/setup guides for host applications.
 
 - `quickstart.md`
 - `frame_loop_patterns.md`
+- `stygian_editor_module.md`

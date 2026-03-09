@@ -16,6 +16,7 @@
 #define STYGIAN_VK_IMAGE_SAMPLERS 16
 #define STYGIAN_VK_MAX_SWAPCHAIN_IMAGES 3
 #define STYGIAN_VK_FRAMES_IN_FLIGHT 3
+#define STYGIAN_VK_CAPTURE_SLOTS 4
 
 // ============================================================================
 // Vulkan Access Point Structure
@@ -134,6 +135,34 @@ struct StygianAP {
 
   // Main surface (embedded for the primary window)
   struct StygianAPSurface *main_surface;
+
+  // Capture readback (Vulkan v1: staged ring + async poll)
+  bool capture_supported;
+  bool capture_active;
+  bool capture_request_pending;
+  bool capture_swapchain_transfer_src;
+  uint32_t capture_width;
+  uint32_t capture_height;
+  uint32_t capture_stride_bytes;
+  uint32_t capture_frame_bytes;
+  VkBuffer capture_staging[STYGIAN_VK_CAPTURE_SLOTS];
+  VkDeviceMemory capture_staging_memory[STYGIAN_VK_CAPTURE_SLOTS];
+  void *capture_staging_mapped[STYGIAN_VK_CAPTURE_SLOTS];
+  VkDeviceSize capture_staging_alloc_size[STYGIAN_VK_CAPTURE_SLOTS];
+  bool capture_memory_host_coherent;
+  bool capture_memory_host_cached;
+  VkCommandBuffer capture_command_buffers[STYGIAN_VK_CAPTURE_SLOTS];
+  VkFence capture_fences[STYGIAN_VK_CAPTURE_SLOTS];
+  bool capture_in_flight[STYGIAN_VK_CAPTURE_SLOTS];
+  uint64_t capture_slot_frame_index[STYGIAN_VK_CAPTURE_SLOTS];
+  VkSemaphore
+      capture_finished[STYGIAN_VK_FRAMES_IN_FLIGHT]; // waited by present
+  bool capture_present_wait[STYGIAN_VK_FRAMES_IN_FLIGHT];
+  uint8_t capture_write_slot;
+  uint8_t capture_read_slot;
+  uint8_t capture_pending_slot;
+  uint64_t capture_frame_counter;
+  uint64_t capture_pending_frame_index;
 };
 
 // ============================================================================
@@ -326,6 +355,673 @@ static uint32_t find_memory_type(VkPhysicalDevice physical_device,
   }
 
   return UINT32_MAX;
+}
+
+static uint32_t
+stygian_vk_capture_choose_readback_memory_type(VkPhysicalDevice physical_device,
+                                               uint32_t memory_type_bits,
+                                               VkMemoryPropertyFlags *out_flags) {
+  static const VkMemoryPropertyFlags preferred[] = {
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+  };
+  VkPhysicalDeviceMemoryProperties mem_props;
+  uint32_t i = 0;
+  uint32_t memory_index = UINT32_MAX;
+  if (out_flags) {
+    *out_flags = 0u;
+  }
+  vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+  for (i = 0; i < (uint32_t)(sizeof(preferred) / sizeof(preferred[0])); ++i) {
+    memory_index = find_memory_type(physical_device, memory_type_bits, preferred[i]);
+    if (memory_index != UINT32_MAX) {
+      if (out_flags) {
+        *out_flags = mem_props.memoryTypes[memory_index].propertyFlags;
+      }
+      return memory_index;
+    }
+  }
+  return UINT32_MAX;
+}
+
+static void stygian_vk_capture_reset(StygianAP *ap) {
+  uint32_t i = 0;
+  if (!ap)
+    return;
+  ap->capture_active = false;
+  ap->capture_request_pending = false;
+  ap->capture_supported = false;
+  ap->capture_swapchain_transfer_src = false;
+  ap->capture_width = 0u;
+  ap->capture_height = 0u;
+  ap->capture_stride_bytes = 0u;
+  ap->capture_frame_bytes = 0u;
+  ap->capture_write_slot = 0u;
+  ap->capture_read_slot = 0u;
+  ap->capture_pending_slot = 0u;
+  ap->capture_frame_counter = 0u;
+  ap->capture_pending_frame_index = 0u;
+  ap->capture_memory_host_coherent = false;
+  ap->capture_memory_host_cached = false;
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    ap->capture_staging[i] = VK_NULL_HANDLE;
+    ap->capture_staging_memory[i] = VK_NULL_HANDLE;
+    ap->capture_staging_mapped[i] = NULL;
+    ap->capture_staging_alloc_size[i] = 0u;
+    ap->capture_command_buffers[i] = VK_NULL_HANDLE;
+    ap->capture_fences[i] = VK_NULL_HANDLE;
+    ap->capture_in_flight[i] = false;
+    ap->capture_slot_frame_index[i] = 0u;
+  }
+  for (i = 0; i < STYGIAN_VK_FRAMES_IN_FLIGHT; ++i) {
+    ap->capture_finished[i] = VK_NULL_HANDLE;
+    ap->capture_present_wait[i] = false;
+  }
+}
+
+static bool stygian_vk_capture_any_in_flight(const StygianAP *ap) {
+  uint32_t i = 0;
+  if (!ap)
+    return false;
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (ap->capture_in_flight[i])
+      return true;
+  }
+  return false;
+}
+
+static void stygian_vk_capture_release(StygianAP *ap) {
+  uint32_t i = 0;
+  if (!ap || !ap->device || !ap->command_pool)
+    return;
+
+  for (i = 0; i < STYGIAN_VK_FRAMES_IN_FLIGHT; ++i) {
+    ap->capture_present_wait[i] = false;
+  }
+
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (ap->capture_in_flight[i]) {
+      if (ap->capture_fences[i]) {
+        vkWaitForFences(ap->device, 1, &ap->capture_fences[i], VK_TRUE,
+                        UINT64_MAX);
+      }
+      ap->capture_in_flight[i] = false;
+      ap->capture_slot_frame_index[i] = 0u;
+    }
+  }
+
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (ap->capture_command_buffers[i]) {
+      vkFreeCommandBuffers(ap->device, ap->command_pool, 1,
+                           &ap->capture_command_buffers[i]);
+      ap->capture_command_buffers[i] = VK_NULL_HANDLE;
+    }
+  }
+
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (ap->capture_fences[i]) {
+      vkDestroyFence(ap->device, ap->capture_fences[i], NULL);
+      ap->capture_fences[i] = VK_NULL_HANDLE;
+    }
+  }
+
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (ap->capture_staging_mapped[i] && ap->capture_staging_memory[i]) {
+      vkUnmapMemory(ap->device, ap->capture_staging_memory[i]);
+      ap->capture_staging_mapped[i] = NULL;
+    }
+    ap->capture_staging_alloc_size[i] = 0u;
+    if (ap->capture_staging[i]) {
+      vkDestroyBuffer(ap->device, ap->capture_staging[i], NULL);
+      ap->capture_staging[i] = VK_NULL_HANDLE;
+    }
+    if (ap->capture_staging_memory[i]) {
+      vkFreeMemory(ap->device, ap->capture_staging_memory[i], NULL);
+      ap->capture_staging_memory[i] = VK_NULL_HANDLE;
+    }
+  }
+
+  for (i = 0; i < STYGIAN_VK_FRAMES_IN_FLIGHT; ++i) {
+    if (ap->capture_finished[i]) {
+      vkDestroySemaphore(ap->device, ap->capture_finished[i], NULL);
+      ap->capture_finished[i] = VK_NULL_HANDLE;
+    }
+  }
+
+  ap->capture_active = false;
+  ap->capture_request_pending = false;
+  ap->capture_width = 0u;
+  ap->capture_height = 0u;
+  ap->capture_stride_bytes = 0u;
+  ap->capture_frame_bytes = 0u;
+  ap->capture_write_slot = 0u;
+  ap->capture_read_slot = 0u;
+  ap->capture_pending_slot = 0u;
+  ap->capture_pending_frame_index = 0u;
+  ap->capture_memory_host_coherent = false;
+  ap->capture_memory_host_cached = false;
+}
+
+static bool stygian_vk_capture_configure(StygianAP *ap, uint32_t width,
+                                         uint32_t height) {
+  VkCommandBufferAllocateInfo cmd_info;
+  VkSemaphoreCreateInfo sem_info;
+  VkFenceCreateInfo fence_info;
+  VkBufferCreateInfo buffer_info;
+  VkMemoryRequirements mem_reqs;
+  VkMemoryAllocateInfo alloc_info;
+  VkMemoryPropertyFlags memory_flags = 0u;
+  uint32_t memory_index = UINT32_MAX;
+  uint32_t i = 0;
+  uint32_t bytes = 0u;
+
+  if (!ap || !ap->device || !ap->command_pool || width == 0u || height == 0u)
+    return false;
+
+  bytes = width * height * 4u;
+  if (bytes == 0u)
+    return false;
+
+  if (ap->capture_staging[0] && ap->capture_staging_memory[0] &&
+      ap->capture_width == width && ap->capture_height == height &&
+      ap->capture_frame_bytes == bytes) {
+    return true;
+  }
+
+  if (stygian_vk_capture_any_in_flight(ap)) {
+    return false;
+  }
+
+  stygian_vk_capture_release(ap);
+
+  cmd_info = (VkCommandBufferAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = ap->command_pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = STYGIAN_VK_CAPTURE_SLOTS,
+  };
+  if (vkAllocateCommandBuffers(ap->device, &cmd_info, ap->capture_command_buffers) !=
+      VK_SUCCESS) {
+    stygian_vk_capture_release(ap);
+    return false;
+  }
+
+  sem_info = (VkSemaphoreCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+  };
+  for (i = 0; i < STYGIAN_VK_FRAMES_IN_FLIGHT; ++i) {
+    if (vkCreateSemaphore(ap->device, &sem_info, NULL, &ap->capture_finished[i]) !=
+        VK_SUCCESS) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+    ap->capture_present_wait[i] = false;
+  }
+
+  fence_info = (VkFenceCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+      .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+  };
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (vkCreateFence(ap->device, &fence_info, NULL, &ap->capture_fences[i]) !=
+        VK_SUCCESS) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+  }
+
+  buffer_info = (VkBufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = bytes,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  for (i = 0; i < STYGIAN_VK_CAPTURE_SLOTS; ++i) {
+    if (vkCreateBuffer(ap->device, &buffer_info, NULL, &ap->capture_staging[i]) !=
+        VK_SUCCESS) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+    vkGetBufferMemoryRequirements(ap->device, ap->capture_staging[i], &mem_reqs);
+    memory_index = stygian_vk_capture_choose_readback_memory_type(
+        ap->physical_device, mem_reqs.memoryTypeBits, &memory_flags);
+    if (memory_index == UINT32_MAX) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+    ap->capture_memory_host_coherent =
+        (memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u;
+    ap->capture_memory_host_cached =
+        (memory_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0u;
+    alloc_info = (VkMemoryAllocateInfo){
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = memory_index,
+    };
+    if (vkAllocateMemory(ap->device, &alloc_info, NULL,
+                         &ap->capture_staging_memory[i]) != VK_SUCCESS) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+    if (vkBindBufferMemory(ap->device, ap->capture_staging[i],
+                           ap->capture_staging_memory[i], 0) != VK_SUCCESS) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+    if (vkMapMemory(ap->device, ap->capture_staging_memory[i], 0,
+                    alloc_info.allocationSize, 0,
+                    &ap->capture_staging_mapped[i]) != VK_SUCCESS) {
+      stygian_vk_capture_release(ap);
+      return false;
+    }
+    ap->capture_staging_alloc_size[i] = alloc_info.allocationSize;
+    ap->capture_in_flight[i] = false;
+    ap->capture_slot_frame_index[i] = 0u;
+  }
+
+  ap->capture_width = width;
+  ap->capture_height = height;
+  ap->capture_stride_bytes = width * 4u;
+  ap->capture_frame_bytes = bytes;
+  ap->capture_write_slot = 0u;
+  ap->capture_read_slot = 0u;
+  ap->capture_pending_slot = 0u;
+  ap->capture_request_pending = false;
+  ap->capture_pending_frame_index = 0u;
+  return true;
+}
+
+static void stygian_vk_capture_copy_rgba(uint8_t *dst, const uint8_t *src,
+                                         uint32_t width, uint32_t height,
+                                         uint32_t stride, VkFormat format) {
+  bool bgra =
+      (format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB);
+  if (!dst || !src || width == 0u || height == 0u || stride < width * 4u)
+    return;
+
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t *src_row = src + (size_t)(height - 1u - y) * (size_t)stride;
+    uint8_t *dst_row = dst + (size_t)y * (size_t)stride;
+    if (!bgra) {
+      memcpy(dst_row, src_row, (size_t)width * 4u);
+      continue;
+    }
+    {
+      const uint32_t *src_px = (const uint32_t *)src_row;
+      uint32_t *dst_px = (uint32_t *)dst_row;
+      for (uint32_t x = 0; x < width; ++x) {
+        uint32_t pixel = src_px[x];
+        dst_px[x] =
+            (pixel & 0xFF00FF00u) | ((pixel & 0x00FF0000u) >> 16) |
+            ((pixel & 0x000000FFu) << 16);
+      }
+    }
+  }
+}
+
+static bool stygian_vk_capture_record_copy_cmd(StygianAP *ap, uint8_t slot) {
+  VkCommandBufferBeginInfo begin_info;
+  VkImageMemoryBarrier img_barrier;
+  VkBufferMemoryBarrier buf_barrier;
+  VkBufferImageCopy region;
+  VkCommandBuffer cmd;
+  if (!ap || slot >= STYGIAN_VK_CAPTURE_SLOTS || !ap->capture_command_buffers[slot] ||
+      !ap->capture_staging[slot] || ap->current_image >= ap->swapchain_image_count) {
+    return false;
+  }
+  cmd = ap->capture_command_buffers[slot];
+  vkResetCommandBuffer(cmd, 0);
+  begin_info = (VkCommandBufferBeginInfo){
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS)
+    return false;
+  img_barrier = (VkImageMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = 0,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = ap->swapchain_images[ap->current_image],
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+                       &img_barrier);
+  region = (VkBufferImageCopy){
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {ap->capture_width, ap->capture_height, 1},
+  };
+  vkCmdCopyImageToBuffer(cmd, ap->swapchain_images[ap->current_image],
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         ap->capture_staging[slot], 1, &region);
+  buf_barrier = (VkBufferMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = ap->capture_staging[slot],
+      .offset = 0,
+      .size = ap->capture_frame_bytes,
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &buf_barrier,
+                       0, NULL);
+  img_barrier = (VkImageMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = ap->swapchain_images[ap->current_image],
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                       NULL, 1, &img_barrier);
+  return vkEndCommandBuffer(cmd) == VK_SUCCESS;
+}
+
+static bool stygian_vk_capture_submit_copy(StygianAP *ap, uint8_t slot,
+                                           uint32_t frame_slot) {
+  VkPipelineStageFlags wait_stages[1];
+  VkSemaphore wait_semaphores[1];
+  VkSemaphore signal_semaphores[1];
+  VkSubmitInfo submit_info;
+  if (!ap || slot >= STYGIAN_VK_CAPTURE_SLOTS ||
+      frame_slot >= STYGIAN_VK_FRAMES_IN_FLIGHT || !ap->capture_fences[slot]) {
+    return false;
+  }
+  wait_stages[0] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  wait_semaphores[0] = ap->render_finished[frame_slot];
+  signal_semaphores[0] = ap->capture_finished[frame_slot];
+  vkResetFences(ap->device, 1, &ap->capture_fences[slot]);
+  submit_info = (VkSubmitInfo){
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = wait_semaphores,
+      .pWaitDstStageMask = wait_stages,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &ap->capture_command_buffers[slot],
+      .signalSemaphoreCount = 1,
+      .pSignalSemaphores = signal_semaphores,
+  };
+  if (vkQueueSubmit(ap->graphics_queue, 1, &submit_info,
+                    ap->capture_fences[slot]) != VK_SUCCESS) {
+    return false;
+  }
+  ap->capture_present_wait[frame_slot] = true;
+  return true;
+}
+
+static bool stygian_vk_capture_map_slot(StygianAP *ap, uint8_t slot,
+                                        uint8_t *dst_rgba,
+                                        uint32_t dst_bytes,
+                                        StygianAPCaptureFrameInfo *out_info) {
+  const uint8_t *mapped = NULL;
+  VkMappedMemoryRange mapped_range;
+  if (!ap || slot >= STYGIAN_VK_CAPTURE_SLOTS || !dst_rgba ||
+      dst_bytes < ap->capture_frame_bytes || !ap->capture_staging_memory[slot] ||
+      !ap->capture_staging_mapped[slot]) {
+    return false;
+  }
+  if (!ap->capture_memory_host_coherent) {
+    mapped_range = (VkMappedMemoryRange){
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        .memory = ap->capture_staging_memory[slot],
+        .offset = 0,
+        .size = ap->capture_staging_alloc_size[slot]
+                    ? ap->capture_staging_alloc_size[slot]
+                    : VK_WHOLE_SIZE,
+    };
+    if (vkInvalidateMappedMemoryRanges(ap->device, 1, &mapped_range) !=
+        VK_SUCCESS) {
+      return false;
+    }
+  }
+  mapped = (const uint8_t *)ap->capture_staging_mapped[slot];
+  stygian_vk_capture_copy_rgba(dst_rgba, mapped, ap->capture_width,
+                               ap->capture_height, ap->capture_stride_bytes,
+                               ap->swapchain_format);
+  if (out_info) {
+    out_info->width = (int)ap->capture_width;
+    out_info->height = (int)ap->capture_height;
+    out_info->stride_bytes = ap->capture_stride_bytes;
+    out_info->frame_index = ap->capture_slot_frame_index[slot];
+    out_info->format = STYGIAN_AP_CAPTURE_FORMAT_RGBA8;
+  }
+  return true;
+}
+
+static bool stygian_vk_capture_readback_sync(StygianAP *ap, uint8_t *dst_rgba,
+                                             uint32_t dst_bytes,
+                                             StygianAPCaptureFrameInfo *out_info,
+                                             uint64_t frame_index) {
+  VkCommandBufferAllocateInfo cmd_alloc;
+  VkCommandBufferBeginInfo begin_info;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  VkImageMemoryBarrier img_barrier;
+  VkBufferMemoryBarrier buf_barrier;
+  VkBufferImageCopy region;
+  VkSubmitInfo submit_info;
+  void *mapped = NULL;
+  VkResult res = VK_SUCCESS;
+
+  VkBuffer staging = VK_NULL_HANDLE;
+  VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+  VkBufferCreateInfo buffer_info;
+  VkMemoryRequirements mem_reqs;
+  VkMemoryAllocateInfo alloc_info;
+  VkMemoryPropertyFlags memory_flags = 0u;
+  bool memory_host_coherent = false;
+  VkMappedMemoryRange mapped_range;
+  uint32_t memory_index = UINT32_MAX;
+
+  if (!ap || !dst_rgba || ap->swapchain_extent.width == 0u ||
+      ap->swapchain_extent.height == 0u || !ap->capture_swapchain_transfer_src ||
+      ap->current_image >= ap->swapchain_image_count || ap->frame_active) {
+    return false;
+  }
+
+  if (ap->capture_width != ap->swapchain_extent.width ||
+      ap->capture_height != ap->swapchain_extent.height) {
+    ap->capture_width = ap->swapchain_extent.width;
+    ap->capture_height = ap->swapchain_extent.height;
+    ap->capture_stride_bytes = ap->capture_width * 4u;
+    ap->capture_frame_bytes = ap->capture_stride_bytes * ap->capture_height;
+  }
+
+  if (out_info) {
+    out_info->width = (int)ap->capture_width;
+    out_info->height = (int)ap->capture_height;
+    out_info->stride_bytes = ap->capture_stride_bytes;
+    out_info->frame_index = frame_index;
+    out_info->format = STYGIAN_AP_CAPTURE_FORMAT_RGBA8;
+  }
+  if (dst_bytes < ap->capture_frame_bytes)
+    return false;
+
+  if (vkQueueWaitIdle(ap->graphics_queue) != VK_SUCCESS)
+    return false;
+
+  buffer_info = (VkBufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = ap->capture_frame_bytes,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  if (vkCreateBuffer(ap->device, &buffer_info, NULL, &staging) != VK_SUCCESS) {
+    return false;
+  }
+  vkGetBufferMemoryRequirements(ap->device, staging, &mem_reqs);
+  memory_index = stygian_vk_capture_choose_readback_memory_type(
+      ap->physical_device, mem_reqs.memoryTypeBits, &memory_flags);
+  if (memory_index == UINT32_MAX) {
+    vkDestroyBuffer(ap->device, staging, NULL);
+    return false;
+  }
+  memory_host_coherent =
+      (memory_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u;
+  alloc_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_reqs.size,
+      .memoryTypeIndex = memory_index,
+  };
+  if (vkAllocateMemory(ap->device, &alloc_info, NULL, &staging_memory) !=
+      VK_SUCCESS) {
+    vkDestroyBuffer(ap->device, staging, NULL);
+    return false;
+  }
+  if (vkBindBufferMemory(ap->device, staging, staging_memory, 0) != VK_SUCCESS) {
+    vkDestroyBuffer(ap->device, staging, NULL);
+    vkFreeMemory(ap->device, staging_memory, NULL);
+    return false;
+  }
+
+  cmd_alloc = (VkCommandBufferAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = ap->command_pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = 1,
+  };
+  if (vkAllocateCommandBuffers(ap->device, &cmd_alloc, &cmd) != VK_SUCCESS) {
+    return false;
+  }
+
+  begin_info = (VkCommandBufferBeginInfo){
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
+    vkFreeCommandBuffers(ap->device, ap->command_pool, 1, &cmd);
+    return false;
+  }
+
+  img_barrier = (VkImageMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = ap->swapchain_images[ap->current_image],
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+                       &img_barrier);
+
+  region = (VkBufferImageCopy){
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {ap->capture_width, ap->capture_height, 1},
+  };
+  vkCmdCopyImageToBuffer(cmd, ap->swapchain_images[ap->current_image],
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         staging, 1, &region);
+
+  buf_barrier = (VkBufferMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = staging,
+      .offset = 0,
+      .size = ap->capture_frame_bytes,
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &buf_barrier,
+                       0, NULL);
+
+  img_barrier = (VkImageMemoryBarrier){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = ap->swapchain_images[ap->current_image],
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                       NULL, 1, &img_barrier);
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    vkFreeCommandBuffers(ap->device, ap->command_pool, 1, &cmd);
+    return false;
+  }
+
+  submit_info = (VkSubmitInfo){
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &cmd,
+  };
+  res = vkQueueSubmit(ap->graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+  if (res != VK_SUCCESS) {
+    vkFreeCommandBuffers(ap->device, ap->command_pool, 1, &cmd);
+    vkDestroyBuffer(ap->device, staging, NULL);
+    vkFreeMemory(ap->device, staging_memory, NULL);
+    return false;
+  }
+  if (vkQueueWaitIdle(ap->graphics_queue) != VK_SUCCESS) {
+    vkFreeCommandBuffers(ap->device, ap->command_pool, 1, &cmd);
+    vkDestroyBuffer(ap->device, staging, NULL);
+    vkFreeMemory(ap->device, staging_memory, NULL);
+    return false;
+  }
+
+  vkFreeCommandBuffers(ap->device, ap->command_pool, 1, &cmd);
+
+  if (vkMapMemory(ap->device, staging_memory, 0, ap->capture_frame_bytes, 0,
+                  &mapped) != VK_SUCCESS) {
+    vkDestroyBuffer(ap->device, staging, NULL);
+    vkFreeMemory(ap->device, staging_memory, NULL);
+    return false;
+  }
+
+  if (!memory_host_coherent) {
+    mapped_range = (VkMappedMemoryRange){
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        .memory = staging_memory,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    if (vkInvalidateMappedMemoryRanges(ap->device, 1, &mapped_range) !=
+        VK_SUCCESS) {
+      vkUnmapMemory(ap->device, staging_memory);
+      vkDestroyBuffer(ap->device, staging, NULL);
+      vkFreeMemory(ap->device, staging_memory, NULL);
+      return false;
+    }
+  }
+
+  stygian_vk_capture_copy_rgba(dst_rgba, (const uint8_t *)mapped, ap->capture_width,
+                               ap->capture_height, ap->capture_stride_bytes,
+                               ap->swapchain_format);
+  vkUnmapMemory(ap->device, staging_memory);
+  vkDestroyBuffer(ap->device, staging, NULL);
+  vkFreeMemory(ap->device, staging_memory, NULL);
+  return true;
 }
 
 // ============================================================================
@@ -618,6 +1314,10 @@ static bool create_swapchain(StygianAP *ap, int width, int height,
   if (image_count < capabilities.minImageCount)
     image_count = capabilities.minImageCount;
 
+  ap->capture_swapchain_transfer_src =
+      (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+  ap->capture_supported = ap->capture_swapchain_transfer_src;
+
   VkSwapchainCreateInfoKHR create_info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
       .surface = ap->surface,
@@ -626,7 +1326,10 @@ static bool create_swapchain(StygianAP *ap, int width, int height,
       .imageColorSpace = surface_format.colorSpace,
       .imageExtent = extent,
       .imageArrayLayers = 1,
-      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    (ap->capture_swapchain_transfer_src
+                         ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                         : 0),
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .preTransform = capabilities.currentTransform,
       .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -1389,6 +2092,7 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   if (!ap)
     return NULL;
   memset(ap, 0, sizeof(StygianAP));
+  stygian_vk_capture_reset(ap);
   ap->allocator = config->allocator;
   ap->window = config->window;
   ap->max_elements = config->max_elements > 0 ? config->max_elements : 16384;
@@ -1665,6 +2369,8 @@ void stygian_ap_destroy(StygianAP *ap) {
     vkDeviceWaitIdle(ap->device);
   }
 
+  stygian_vk_capture_release(ap);
+
   // Destroy sync objects
   for (int i = 0; i < STYGIAN_VK_FRAMES_IN_FLIGHT; i++) {
     if (ap->render_finished[i])
@@ -1812,6 +2518,9 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
       return;
     }
     ap->swapchain_needs_recreate = false;
+    if (ap->capture_active && !ap->capture_supported) {
+      stygian_vk_capture_release(ap);
+    }
   }
 
   // Coalesce resize churn: only recreate after size is stable for N frames.
@@ -1836,6 +2545,9 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
     }
     ap->swapchain_needs_recreate = false;
     ap->resize_stable_count = 0;
+    if (ap->capture_active && !ap->capture_supported) {
+      stygian_vk_capture_release(ap);
+    }
   } else {
     ap->resize_pending_w = width;
     ap->resize_pending_h = height;
@@ -2095,6 +2807,46 @@ void stygian_ap_draw_range(StygianAP *ap, uint32_t first_instance,
   vkCmdDraw(cmd, 6, instance_count, 0, first_instance);
 }
 
+static void stygian_vk_capture_schedule_for_current_frame(StygianAP *ap) {
+  uint8_t slot = 0u;
+  uint32_t frame_slot = 0u;
+  if (!ap || !ap->capture_active || !ap->capture_request_pending ||
+      !ap->capture_swapchain_transfer_src || ap->frame_active == false) {
+    return;
+  }
+  if (ap->capture_width != ap->swapchain_extent.width ||
+      ap->capture_height != ap->swapchain_extent.height) {
+    if (!stygian_vk_capture_configure(ap, ap->swapchain_extent.width,
+                                      ap->swapchain_extent.height)) {
+      ap->capture_request_pending = false;
+      ap->capture_pending_frame_index = 0u;
+      return;
+    }
+  }
+  slot = ap->capture_pending_slot;
+  if (slot >= STYGIAN_VK_CAPTURE_SLOTS || ap->capture_in_flight[slot]) {
+    ap->capture_request_pending = false;
+    ap->capture_pending_frame_index = 0u;
+    return;
+  }
+  if (!stygian_vk_capture_record_copy_cmd(ap, slot)) {
+    ap->capture_request_pending = false;
+    ap->capture_pending_frame_index = 0u;
+    return;
+  }
+  frame_slot = ap->current_frame;
+  if (!stygian_vk_capture_submit_copy(ap, slot, frame_slot)) {
+    ap->capture_request_pending = false;
+    ap->capture_pending_frame_index = 0u;
+    return;
+  }
+  ap->capture_in_flight[slot] = true;
+  ap->capture_slot_frame_index[slot] = ap->capture_pending_frame_index;
+  ap->capture_write_slot = (uint8_t)((slot + 1u) % STYGIAN_VK_CAPTURE_SLOTS);
+  ap->capture_request_pending = false;
+  ap->capture_pending_frame_index = 0u;
+}
+
 void stygian_ap_end_frame(StygianAP *ap) {
   if (!ap || !ap->frame_active)
     return;
@@ -2141,7 +2893,12 @@ void stygian_ap_end_frame(StygianAP *ap) {
   }
   if (result != VK_SUCCESS) {
     printf("[Stygian AP VK] Failed to submit command buffer: %d\n", result);
+    ap->capture_request_pending = false;
+    ap->capture_pending_frame_index = 0u;
+    return;
   }
+
+  stygian_vk_capture_schedule_for_current_frame(ap);
 }
 
 void stygian_ap_swap(StygianAP *ap) {
@@ -2149,13 +2906,16 @@ void stygian_ap_swap(StygianAP *ap) {
     return;
 
   // Present
-  VkSemaphore signal_semaphores[] = {ap->render_finished[ap->current_frame]};
+  VkSemaphore wait_semaphores[] = {
+      ap->capture_present_wait[ap->current_frame]
+          ? ap->capture_finished[ap->current_frame]
+          : ap->render_finished[ap->current_frame]};
   VkSwapchainKHR swapchains[] = {ap->swapchain};
 
   VkPresentInfoKHR present_info = {
       .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
       .waitSemaphoreCount = 1,
-      .pWaitSemaphores = signal_semaphores,
+      .pWaitSemaphores = wait_semaphores,
       .swapchainCount = 1,
       .pSwapchains = swapchains,
       .pImageIndices = &ap->current_image,
@@ -2200,8 +2960,14 @@ void stygian_ap_swap(StygianAP *ap) {
   }
 
   // Advance to next frame
+  ap->capture_present_wait[ap->current_frame] = false;
   ap->current_frame = (ap->current_frame + 1) % STYGIAN_VK_FRAMES_IN_FLIGHT;
   ap->frame_active = false;
+}
+
+void stygian_ap_set_present_enabled(StygianAP *ap, bool enable) {
+  (void)ap;
+  (void)enable;
 }
 
 StygianAPTexture stygian_ap_texture_create(StygianAP *ap, int w, int h,
@@ -3011,4 +3777,97 @@ void stygian_ap_surface_swap(StygianAP *ap, StygianAPSurface *surface) {
 
 StygianAPSurface *stygian_ap_get_main_surface(StygianAP *ap) {
   return ap ? ap->main_surface : NULL;
+}
+
+bool stygian_ap_capture_is_supported(const StygianAP *ap) {
+  if (!ap)
+    return false;
+  return ap->capture_supported;
+}
+
+bool stygian_ap_capture_begin(StygianAP *ap) {
+  if (!ap || !stygian_ap_capture_is_supported(ap))
+    return false;
+  if (ap->capture_active)
+    return true;
+  if (!stygian_vk_capture_configure(ap, ap->swapchain_extent.width,
+                                    ap->swapchain_extent.height)) {
+    return false;
+  }
+  ap->capture_active = true;
+  ap->capture_request_pending = false;
+  ap->capture_frame_counter = 0u;
+  ap->capture_pending_frame_index = 0u;
+  return true;
+}
+
+void stygian_ap_capture_end(StygianAP *ap) {
+  if (!ap)
+    return;
+  stygian_vk_capture_release(ap);
+}
+
+bool stygian_ap_capture_request_readback(StygianAP *ap) {
+  if (!ap || !ap->capture_active || ap->capture_request_pending)
+    return false;
+  if (ap->swapchain_extent.width == 0u || ap->swapchain_extent.height == 0u ||
+      ap->frame_active) {
+    return false;
+  }
+  if (ap->capture_width != ap->swapchain_extent.width ||
+      ap->capture_height != ap->swapchain_extent.height) {
+    if (!stygian_vk_capture_configure(ap, ap->swapchain_extent.width,
+                                      ap->swapchain_extent.height)) {
+      return false;
+    }
+  }
+  if (ap->capture_in_flight[ap->capture_write_slot]) {
+    return false;
+  }
+  ap->capture_frame_counter++;
+  ap->capture_pending_frame_index = ap->capture_frame_counter;
+  ap->capture_pending_slot = ap->capture_write_slot;
+  ap->capture_request_pending = true;
+  return true;
+}
+
+bool stygian_ap_capture_poll_readback(StygianAP *ap, uint8_t *dst_rgba,
+                                      uint32_t dst_bytes,
+                                      StygianAPCaptureFrameInfo *out_info) {
+  uint8_t slot = 0u;
+  VkResult status = VK_NOT_READY;
+  bool ok = false;
+  if (!ap || !ap->capture_active || !dst_rgba)
+    return false;
+  slot = ap->capture_read_slot;
+  if (slot >= STYGIAN_VK_CAPTURE_SLOTS || !ap->capture_in_flight[slot] ||
+      !ap->capture_fences[slot]) {
+    return false;
+  }
+  status = vkGetFenceStatus(ap->device, ap->capture_fences[slot]);
+  if (status != VK_SUCCESS)
+    return false;
+  ok = stygian_vk_capture_map_slot(ap, slot, dst_rgba, dst_bytes, out_info);
+  if (!ok)
+    return false;
+  ap->capture_in_flight[slot] = false;
+  ap->capture_slot_frame_index[slot] = 0u;
+  ap->capture_read_slot = (uint8_t)((slot + 1u) % STYGIAN_VK_CAPTURE_SLOTS);
+  return ok;
+}
+
+bool stygian_ap_capture_snapshot(StygianAP *ap, uint8_t *dst_rgba,
+                                 uint32_t dst_bytes,
+                                 StygianAPCaptureFrameInfo *out_info) {
+  uint64_t frame_index = 0u;
+  if (out_info) {
+    memset(out_info, 0, sizeof(*out_info));
+    out_info->format = STYGIAN_AP_CAPTURE_FORMAT_RGBA8;
+  }
+  if (!ap || !stygian_ap_capture_is_supported(ap) || !dst_rgba)
+    return false;
+  ap->capture_frame_counter++;
+  frame_index = ap->capture_frame_counter;
+  return stygian_vk_capture_readback_sync(ap, dst_rgba, dst_bytes, out_info,
+                                          frame_index);
 }

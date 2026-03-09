@@ -29,7 +29,9 @@ This is a documentation attribution policy. It does not rewrite git history.
 
 ## Project Status and Maintenance
 
-- Stygian is in its infancy and remains a work in progress.
+- Stygian is under active development. Core rendering, DDI contract, SoA
+  layout, and the OpenGL/Vulkan backends are stable. Platform coverage and
+  widget breadth are expanding.
 - Performance may not always meet expectations across all workloads and hardware.
 - Stygian is MIT-licensed and provided as-is, without warranty.
 - Central repo maintenance is limited, and updates are expected to be occasional.

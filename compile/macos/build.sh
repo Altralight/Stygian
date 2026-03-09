@@ -24,6 +24,7 @@ mkdir -p build
 build_one() {
   local name="$1"
   local backend entry stem
+  local zstd_prefix=""
   backend="$(jq -r --arg n "$name" '.targets[$n].backend // empty' "$MANIFEST")"
   entry="$(jq -r --arg n "$name" '.targets[$n].entry_source // empty' "$MANIFEST")"
   stem="$(jq -r --arg n "$name" '.targets[$n].output_stem // empty' "$MANIFEST")"
@@ -32,13 +33,33 @@ build_one() {
     exit 1
   fi
 
-  mapfile -t common_flags < <(jq -r '.common.flags[]' "$MANIFEST")
-  mapfile -t common_includes < <(jq -r '.common.includes[]' "$MANIFEST")
-  mapfile -t common_sources < <(jq -r '.common.sources[]' "$MANIFEST")
-  mapfile -t common_defines < <(jq -r '.common.defines[]' "$MANIFEST")
+  common_flags=()
+  while IFS= read -r line; do
+    common_flags+=("$line")
+  done < <(jq -r '.common.flags[]' "$MANIFEST")
+  common_includes=()
+  while IFS= read -r line; do
+    common_includes+=("$line")
+  done < <(jq -r '.common.includes[]' "$MANIFEST")
+  common_sources=()
+  while IFS= read -r line; do
+    common_sources+=("$line")
+  done < <(jq -r '.common.sources[]' "$MANIFEST")
+  common_defines=()
+  while IFS= read -r line; do
+    common_defines+=("$line")
+  done < <(jq -r '.common.defines[]' "$MANIFEST")
 
   args=()
   args+=("${common_flags[@]}")
+  args+=("-D_DARWIN_C_SOURCE" "-D_POSIX_C_SOURCE=200809L"
+         "-DGL_SILENCE_DEPRECATION")
+  if command -v brew >/dev/null 2>&1; then
+    zstd_prefix="$(brew --prefix zstd 2>/dev/null || true)"
+    if [[ -n "$zstd_prefix" ]]; then
+      args+=("-I" "$zstd_prefix/include" "-L" "$zstd_prefix/lib")
+    fi
+  fi
   for inc in "${common_includes[@]}"; do
     args+=("-I" "$inc")
   done
@@ -69,7 +90,10 @@ build_one() {
 }
 
 if [[ -n "$GROUP" ]]; then
-  mapfile -t group_targets < <(jq -r --arg g "$GROUP" '.groups[$g][]? // empty' "$MANIFEST")
+  group_targets=()
+  while IFS= read -r line; do
+    group_targets+=("$line")
+  done < <(jq -r --arg g "$GROUP" '.groups[$g][]? // empty' "$MANIFEST")
   if [[ ${#group_targets[@]} -eq 0 ]]; then
     echo "unknown group: $GROUP" >&2
     exit 1

@@ -3,10 +3,15 @@
 #include "../window/stygian_input.h"
 #include "../window/stygian_window.h"
 #include "mini_perf_harness.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef STYGIAN_DEMO_VULKAN
 #define STYGIAN_SUITE_BACKEND STYGIAN_BACKEND_VULKAN
@@ -27,12 +32,31 @@ typedef enum PerfScenario {
   PERF_SCENARIO_CLIP = 3,
   PERF_SCENARIO_SCROLL = 4,
   PERF_SCENARIO_TEXT = 5,
+  PERF_SCENARIO_STATIC = 6,
+  PERF_SCENARIO_FULLHOT = 7,
+  PERF_SCENARIO_TEXT_STATIC = 8,
 } PerfScenario;
+
+typedef struct DenseGridLayout {
+  float base_x;
+  float base_y;
+  float cell_w;
+  float cell_h;
+  float rect_w;
+  float rect_h;
+  uint32_t cols;
+} DenseGridLayout;
 
 typedef struct PerfIntervalStats {
   uint32_t render_frames;
   uint32_t eval_frames;
   uint64_t samples;
+  double sum_draw_calls;
+  double sum_elements;
+  double sum_clip_count;
+  double sum_replay_hits;
+  double sum_replay_misses;
+  double sum_replay_forced;
   double sum_gpu_ms;
   double sum_build_ms;
   double sum_submit_ms;
@@ -41,10 +65,41 @@ typedef struct PerfIntervalStats {
   double sum_upload_ranges;
 } PerfIntervalStats;
 
+typedef struct PerfIntervalRow {
+  uint32_t second_index;
+  uint32_t render_frames;
+  uint32_t eval_frames;
+  double draw_calls;
+  double elements;
+  double clip_count;
+  double replay_hits;
+  double replay_misses;
+  double replay_forced;
+  double render_ms;
+  double gpu_ms;
+  double build_ms;
+  double submit_ms;
+  double present_ms;
+  double upload_bytes;
+  double upload_ranges;
+  uint32_t cmd_applied;
+  uint32_t cmd_drops;
+} PerfIntervalRow;
+
 static double now_seconds(void) {
+#ifdef _WIN32
+  static LARGE_INTEGER freq = {0};
+  LARGE_INTEGER counter;
+  if (freq.QuadPart == 0) {
+    QueryPerformanceFrequency(&freq);
+  }
+  QueryPerformanceCounter(&counter);
+  return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
   struct timespec ts;
   timespec_get(&ts, TIME_UTC);
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#endif
 }
 
 static const char *scenario_name(PerfScenario scenario) {
@@ -61,6 +116,12 @@ static const char *scenario_name(PerfScenario scenario) {
     return "scroll";
   case PERF_SCENARIO_TEXT:
     return "text";
+  case PERF_SCENARIO_STATIC:
+    return "static";
+  case PERF_SCENARIO_FULLHOT:
+    return "fullhot";
+  case PERF_SCENARIO_TEXT_STATIC:
+    return "text_static";
   default:
     return "idle";
   }
@@ -79,6 +140,12 @@ static PerfScenario parse_scenario(const char *name) {
     return PERF_SCENARIO_SCROLL;
   if (strcmp(name, "text") == 0)
     return PERF_SCENARIO_TEXT;
+  if (strcmp(name, "static") == 0)
+    return PERF_SCENARIO_STATIC;
+  if (strcmp(name, "fullhot") == 0)
+    return PERF_SCENARIO_FULLHOT;
+  if (strcmp(name, "text_static") == 0)
+    return PERF_SCENARIO_TEXT_STATIC;
   return PERF_SCENARIO_IDLE;
 }
 
@@ -91,6 +158,15 @@ static void interval_add_sample(StygianContext *ctx, PerfIntervalStats *stats,
   else
     stats->render_frames++;
   stats->samples++;
+  stats->sum_draw_calls += (double)stygian_get_last_frame_draw_calls(ctx);
+  stats->sum_elements += (double)stygian_get_last_frame_element_count(ctx);
+  stats->sum_clip_count += (double)stygian_get_last_frame_clip_count(ctx);
+  stats->sum_replay_hits +=
+      (double)stygian_get_last_frame_scope_replay_hits(ctx);
+  stats->sum_replay_misses +=
+      (double)stygian_get_last_frame_scope_replay_misses(ctx);
+  stats->sum_replay_forced +=
+      (double)stygian_get_last_frame_scope_forced_rebuilds(ctx);
   stats->sum_gpu_ms += (double)stygian_get_last_frame_gpu_ms(ctx);
   stats->sum_build_ms += (double)stygian_get_last_frame_build_ms(ctx);
   stats->sum_submit_ms += (double)stygian_get_last_frame_submit_ms(ctx);
@@ -101,58 +177,188 @@ static void interval_add_sample(StygianContext *ctx, PerfIntervalStats *stats,
       (double)stygian_get_last_frame_upload_ranges(ctx);
 }
 
-static void interval_log(const PerfIntervalStats *stats,
-                         const char *scenario_label, uint32_t second_index,
-                         StygianContext *ctx) {
+static PerfIntervalRow interval_row_make(const PerfIntervalStats *stats,
+                                         uint32_t second_index,
+                                         StygianContext *ctx) {
+  PerfIntervalRow row;
   double n = (stats && stats->samples > 0u) ? (double)stats->samples : 1.0;
-  printf("PERFCASE scenario=%s backend=%s second=%u render=%u eval=%u "
-         "gpu_ms=%.4f build_ms=%.4f submit_ms=%.4f present_ms=%.4f "
-         "upload_bytes=%.0f upload_ranges=%.2f cmd_applied=%u cmd_drops=%u\n",
-         scenario_label, STYGIAN_SUITE_RENDERER_NAME, second_index,
-         stats ? stats->render_frames : 0u, stats ? stats->eval_frames : 0u,
-         stats ? stats->sum_gpu_ms / n : 0.0, stats ? stats->sum_build_ms / n : 0.0,
-         stats ? stats->sum_submit_ms / n : 0.0,
-         stats ? stats->sum_present_ms / n : 0.0,
-         stats ? stats->sum_upload_bytes / n : 0.0,
-         stats ? stats->sum_upload_ranges / n : 0.0,
-         stygian_get_last_commit_applied(ctx), stygian_get_total_command_drops(ctx));
+  memset(&row, 0, sizeof(row));
+  row.second_index = second_index;
+  row.render_frames = stats ? stats->render_frames : 0u;
+  row.eval_frames = stats ? stats->eval_frames : 0u;
+  row.draw_calls = stats ? stats->sum_draw_calls / n : 0.0;
+  row.elements = stats ? stats->sum_elements / n : 0.0;
+  row.clip_count = stats ? stats->sum_clip_count / n : 0.0;
+  row.replay_hits = stats ? stats->sum_replay_hits / n : 0.0;
+  row.replay_misses = stats ? stats->sum_replay_misses / n : 0.0;
+  row.replay_forced = stats ? stats->sum_replay_forced / n : 0.0;
+  row.build_ms = stats ? stats->sum_build_ms / n : 0.0;
+  row.submit_ms = stats ? stats->sum_submit_ms / n : 0.0;
+  row.render_ms = row.build_ms + row.submit_ms;
+  row.gpu_ms = stats ? stats->sum_gpu_ms / n : 0.0;
+  row.present_ms = stats ? stats->sum_present_ms / n : 0.0;
+  row.upload_bytes = stats ? stats->sum_upload_bytes / n : 0.0;
+  row.upload_ranges = stats ? stats->sum_upload_ranges / n : 0.0;
+  row.cmd_applied = ctx ? stygian_get_last_commit_applied(ctx) : 0u;
+  row.cmd_drops = ctx ? stygian_get_total_command_drops(ctx) : 0u;
+  return row;
 }
 
-static void render_sparse_static_scene(StygianContext *ctx) {
-  const uint32_t cols = 100u;
-  const uint32_t rows = 100u;
-  const float base_x = 12.0f;
-  const float base_y = 72.0f;
-  const float step_x = 7.0f;
-  const float step_y = 5.6f;
-  for (uint32_t y = 0u; y < rows; y++) {
-    for (uint32_t x = 0u; x < cols; x++) {
-      uint32_t index = y * cols + x;
-      float phase = ((float)(index % 251u)) / 250.0f;
-      float r = 0.11f + 0.04f * phase;
-      float g = 0.13f + 0.03f * phase;
-      float b = 0.17f + 0.04f * phase;
-      stygian_rect(ctx, base_x + (float)x * step_x, base_y + (float)y * step_y,
-                   5.4f, 4.0f, r, g, b, 1.0f);
-    }
+static void interval_write_csv(FILE *csv_file, const PerfIntervalRow *row,
+                               const char *scenario_label, uint32_t scene_count,
+                               uint32_t mutate_count, bool raw_mode,
+                               double tick_hz) {
+  if (!csv_file || !row)
+    return;
+  fprintf(csv_file,
+          "%u,%s,%s,%s,%u,%u,%.2f,%u,%u,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.0f,%.2f,%u,%u\n",
+          row->second_index, scenario_label, STYGIAN_SUITE_RENDERER_NAME,
+          raw_mode ? "raw" : "present", scene_count, mutate_count, tick_hz,
+          row->render_frames, row->eval_frames, row->draw_calls, row->elements,
+          row->clip_count, row->replay_hits, row->replay_misses,
+          row->replay_forced, row->render_ms, row->gpu_ms, row->build_ms,
+          row->submit_ms, row->present_ms, row->upload_bytes,
+          row->upload_ranges, row->cmd_applied, row->cmd_drops);
+  fflush(csv_file);
+}
+
+static void interval_log(const PerfIntervalRow *row, const char *scenario_label,
+                         uint32_t scene_count, uint32_t mutate_count,
+                         bool raw_mode, double tick_hz) {
+  if (!row)
+    return;
+  printf("PERFCASE scenario=%s backend=%s mode=%s second=%u render=%u eval=%u "
+         "count=%u mutate=%u tick_hz=%.2f draws=%.2f elems=%.2f clips=%.2f "
+         "replay_h=%.2f replay_m=%.2f replay_f=%.2f render_ms=%.4f gpu_ms=%.4f "
+         "build_ms=%.4f submit_ms=%.4f present_ms=%.4f "
+         "upload_bytes=%.0f upload_ranges=%.2f cmd_applied=%u cmd_drops=%u\n",
+         scenario_label, STYGIAN_SUITE_RENDERER_NAME,
+         raw_mode ? "raw" : "present", row->second_index, row->render_frames,
+         row->eval_frames, scene_count, mutate_count, tick_hz, row->draw_calls,
+         row->elements, row->clip_count, row->replay_hits, row->replay_misses,
+         row->replay_forced, row->render_ms, row->gpu_ms, row->build_ms,
+         row->submit_ms, row->present_ms, row->upload_bytes,
+         row->upload_ranges, row->cmd_applied, row->cmd_drops);
+}
+
+static void summary_log(const PerfIntervalStats *stats,
+                        const char *scenario_label, uint32_t scene_count,
+                        uint32_t mutate_count, bool raw_mode, double tick_hz,
+                        double capture_seconds) {
+  PerfIntervalRow row = interval_row_make(stats, 0u, NULL);
+  double wall_fps = capture_seconds > 0.0
+                        ? (double)row.render_frames / capture_seconds
+                        : 0.0;
+  double wall_frame_ms = wall_fps > 0.0 ? 1000.0 / wall_fps : 0.0;
+  double loop_overhead_ms = wall_frame_ms > row.render_ms
+                                ? wall_frame_ms - row.render_ms
+                                : 0.0;
+  printf("PERFSUMMARY scenario=%s backend=%s mode=%s capture_seconds=%.2f "
+         "render=%u eval=%u count=%u mutate=%u tick_hz=%.2f "
+         "draws=%.2f elems=%.2f clips=%.2f replay_h=%.2f replay_m=%.2f replay_f=%.2f "
+         "render_ms=%.4f wall_fps=%.2f loop_overhead_ms=%.4f gpu_ms=%.4f build_ms=%.4f submit_ms=%.4f "
+         "present_ms=%.4f upload_bytes=%.0f upload_ranges=%.2f\n",
+         scenario_label, STYGIAN_SUITE_RENDERER_NAME,
+         raw_mode ? "raw" : "present", capture_seconds, row.render_frames,
+         row.eval_frames, scene_count, mutate_count, tick_hz, row.draw_calls,
+         row.elements, row.clip_count, row.replay_hits, row.replay_misses,
+         row.replay_forced, row.render_ms, wall_fps, loop_overhead_ms,
+         row.gpu_ms, row.build_ms,
+         row.submit_ms, row.present_ms, row.upload_bytes, row.upload_ranges);
+}
+
+static void dense_grid_layout_init(DenseGridLayout *layout, uint32_t count,
+                                   int width, int height) {
+  float view_w;
+  float view_h;
+  uint32_t rows;
+  if (!layout)
+    return;
+  memset(layout, 0, sizeof(*layout));
+  if (count == 0u)
+    count = 1u;
+  layout->base_x = 12.0f;
+  layout->base_y = 72.0f;
+  view_w = (float)width - 24.0f;
+  view_h = (float)height - 84.0f;
+  if (view_w < 32.0f)
+    view_w = 32.0f;
+  if (view_h < 32.0f)
+    view_h = 32.0f;
+  layout->cols =
+      (uint32_t)ceil(sqrt(((double)count * (double)view_w) / (double)view_h));
+  if (layout->cols == 0u)
+    layout->cols = 1u;
+  rows = (count + layout->cols - 1u) / layout->cols;
+  if (rows == 0u)
+    rows = 1u;
+  layout->cell_w = view_w / (float)layout->cols;
+  layout->cell_h = view_h / (float)rows;
+  layout->rect_w = floorf(layout->cell_w) - 1.0f;
+  layout->rect_h = floorf(layout->cell_h) - 1.0f;
+  if (layout->rect_w < 1.0f)
+    layout->rect_w = 1.0f;
+  if (layout->rect_h < 1.0f)
+    layout->rect_h = 1.0f;
+}
+
+static void dense_grid_rect(const DenseGridLayout *layout, uint32_t index,
+                            float *x, float *y) {
+  uint32_t col;
+  uint32_t row;
+  if (!layout || !x || !y || layout->cols == 0u)
+    return;
+  col = index % layout->cols;
+  row = index / layout->cols;
+  *x = layout->base_x + (float)col * layout->cell_w;
+  *y = layout->base_y + (float)row * layout->cell_h;
+}
+
+static void render_sparse_static_scene(StygianContext *ctx, uint32_t count,
+                                       int width, int height) {
+  DenseGridLayout layout;
+  dense_grid_layout_init(&layout, count, width, height);
+  for (uint32_t index = 0u; index < count; index++) {
+    float x = 0.0f;
+    float y = 0.0f;
+    float phase = ((float)(index % 251u)) / 250.0f;
+    dense_grid_rect(&layout, index, &x, &y);
+    stygian_rect(ctx, x, y, layout.rect_w, layout.rect_h, 0.11f + 0.04f * phase,
+                 0.13f + 0.03f * phase, 0.17f + 0.04f * phase, 1.0f);
   }
 }
 
-static void render_sparse_dynamic_scene(StygianContext *ctx, uint32_t tick_count) {
-  const uint32_t cols = 100u;
-  const float base_x = 12.0f;
-  const float base_y = 72.0f;
-  const float step_x = 7.0f;
-  const float step_y = 5.6f;
-  const uint32_t hot_points = 256u;
-  for (uint32_t i = 0u; i < hot_points; i++) {
-    uint32_t idx = (i * 97u + tick_count * 131u) % 10000u;
-    uint32_t x = idx % cols;
-    uint32_t y = idx / cols;
+static void render_sparse_dynamic_scene(StygianContext *ctx, uint32_t count,
+                                        uint32_t mutate_count, int width,
+                                        int height, uint32_t tick_count) {
+  DenseGridLayout layout;
+  dense_grid_layout_init(&layout, count, width, height);
+  if (mutate_count > count)
+    mutate_count = count;
+  for (uint32_t i = 0u; i < mutate_count; i++) {
+    uint32_t idx = (i * 97u + tick_count * 131u) % count;
+    float x = 0.0f;
+    float y = 0.0f;
     float phase = ((float)((idx + tick_count * 13u) % 211u)) / 210.0f;
-    stygian_rect(ctx, base_x + (float)x * step_x, base_y + (float)y * step_y,
-                 5.4f, 4.0f, 0.35f + 0.6f * phase, 0.86f - 0.4f * phase,
+    dense_grid_rect(&layout, idx, &x, &y);
+    stygian_rect(ctx, x, y, layout.rect_w, layout.rect_h,
+                 0.35f + 0.6f * phase, 0.86f - 0.4f * phase,
                  0.2f + 0.4f * phase, 1.0f);
+  }
+}
+
+static void render_fullhot_scene(StygianContext *ctx, uint32_t count, int width,
+                                 int height, uint32_t tick_count) {
+  DenseGridLayout layout;
+  dense_grid_layout_init(&layout, count, width, height);
+  for (uint32_t index = 0u; index < count; index++) {
+    float x = 0.0f;
+    float y = 0.0f;
+    float phase = ((float)((index * 17u + tick_count * 29u) % 1021u)) / 1020.0f;
+    dense_grid_rect(&layout, index, &x, &y);
+    stygian_rect(ctx, x, y, layout.rect_w, layout.rect_h,
+                 0.18f + 0.72f * phase, 0.22f + 0.50f * (1.0f - phase),
+                 0.30f + 0.45f * phase, 1.0f);
   }
 }
 
@@ -239,12 +445,21 @@ int main(int argc, char **argv) {
   int duration_seconds = 12;
   int width = 1280;
   int height = 820;
+  double warmup_seconds = 1.0;
+  uint32_t scene_count = 10000u;
+  uint32_t mutate_count = 256u;
   bool first_frame = true;
   bool show_perf = true;
   bool perf_scope_visible_prev = false;
+  bool capture_started = false;
+  bool raw_mode = false;
+  bool unattended_bench = false;
+  bool tick_hz_overridden = false;
   double start_time;
+  double capture_start_time = 0.0;
   double last_tick_time;
   double next_interval_time;
+  double tick_hz = 30.0;
   uint32_t second_index = 0u;
   uint32_t tick_count = 0u;
   float auto_scroll_y = 0.0f;
@@ -253,6 +468,7 @@ int main(int argc, char **argv) {
   StygianTextArea editor_state;
   StygianMiniPerfHarness perf;
   PerfIntervalStats interval_stats;
+  PerfIntervalStats capture_stats;
   const StygianScopeId k_scope_chrome = 0x4301u;
   const StygianScopeId k_scope_scene_static = 0x4302u;
   const StygianScopeId k_scope_scene_dynamic = 0x4305u;
@@ -261,6 +477,8 @@ int main(int argc, char **argv) {
   const StygianScopeId k_scope_perf =
       STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4304u;
   const char *scenario_label;
+  const char *csv_path = NULL;
+  FILE *csv_file = NULL;
   StygianWindowConfig win_cfg;
   StygianWindow *window;
   StygianConfig cfg;
@@ -274,12 +492,44 @@ int main(int argc, char **argv) {
       duration_seconds = atoi(argv[++i]);
       if (duration_seconds < 2)
         duration_seconds = 2;
+    } else if (strcmp(argv[i], "--warmup-seconds") == 0 && (i + 1) < argc) {
+      warmup_seconds = atof(argv[++i]);
+      if (warmup_seconds < 0.0)
+        warmup_seconds = 0.0;
+    } else if (strcmp(argv[i], "--count") == 0 && (i + 1) < argc) {
+      unsigned long parsed = strtoul(argv[++i], NULL, 10);
+      scene_count = (parsed == 0ul) ? 1u : (uint32_t)parsed;
+    } else if (strcmp(argv[i], "--mutate-count") == 0 && (i + 1) < argc) {
+      unsigned long parsed = strtoul(argv[++i], NULL, 10);
+      mutate_count = (uint32_t)parsed;
+    } else if (strcmp(argv[i], "--tick-hz") == 0 && (i + 1) < argc) {
+      tick_hz = atof(argv[++i]);
+      if (tick_hz < 0.0)
+        tick_hz = 0.0;
+      tick_hz_overridden = true;
+    } else if (strcmp(argv[i], "--raw") == 0) {
+      raw_mode = true;
     } else if (strcmp(argv[i], "--no-perf") == 0) {
       show_perf = false;
+    } else if (strcmp(argv[i], "--csv") == 0 && (i + 1) < argc) {
+      csv_path = argv[++i];
     }
   }
 
+  if (mutate_count > scene_count)
+    mutate_count = scene_count;
+  if (raw_mode) {
+    if (!tick_hz_overridden)
+      tick_hz = 0.0;
+    show_perf = false;
+    unattended_bench = true;
+  }
+  if (duration_seconds <= (int)ceil(warmup_seconds))
+    duration_seconds = (int)ceil(warmup_seconds) + 1;
+
   scenario_label = scenario_name(scenario);
+  memset(&win_cfg, 0, sizeof(win_cfg));
+  memset(&cfg, 0, sizeof(cfg));
 
   win_cfg.title = "Stygian Pathological Perf Suite";
   win_cfg.width = width;
@@ -290,11 +540,18 @@ int main(int argc, char **argv) {
   win_cfg.gl_minor = 3;
 
   window = stygian_window_create(&win_cfg);
-  if (!window)
+  if (!window) {
+    printf("BENCHERR stage=window_create\n");
     return 1;
+  }
 
   cfg.backend = STYGIAN_SUITE_BACKEND;
-  cfg.max_elements = 0u;
+  if (scenario == PERF_SCENARIO_STATIC || scenario == PERF_SCENARIO_SPARSE ||
+      scenario == PERF_SCENARIO_FULLHOT) {
+    cfg.max_elements = scene_count + 16384u;
+  } else {
+    cfg.max_elements = 0u;
+  }
   cfg.max_textures = 0u;
   cfg.glyph_feature_flags = 0u;
   cfg.window = window;
@@ -302,11 +559,38 @@ int main(int argc, char **argv) {
   cfg.persistent_allocator = NULL;
 
   ctx = stygian_create(&cfg);
-  if (!ctx)
+  if (!ctx) {
+    printf("BENCHERR stage=context_create\n");
     return 1;
+  }
+  stygian_set_vsync(ctx, false);
+  if (raw_mode) {
+    stygian_set_present_enabled(ctx, false);
+    stygian_set_gpu_timing_enabled(ctx, false);
+    stygian_set_output_icc_auto(ctx, false);
+  }
   font = stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+  printf("BENCHCFG scenario=%s backend=%s mode=%s count=%u mutate=%u tick_hz=%.2f warmup=%.2f\n",
+         scenario_label, STYGIAN_SUITE_RENDERER_NAME,
+         raw_mode ? "raw" : "present", scene_count, mutate_count, tick_hz,
+         warmup_seconds);
+  if (csv_path) {
+    csv_file = fopen(csv_path, "w");
+    if (!csv_file) {
+      printf("BENCHERR stage=csv_open path=%s\n", csv_path);
+      if (font)
+        stygian_font_destroy(ctx, font);
+      stygian_destroy(ctx);
+      stygian_window_destroy(window);
+      return 1;
+    }
+    fprintf(csv_file,
+            "second,scenario,backend,mode,count,mutate,tick_hz,render_frames,eval_frames,draw_calls,elements,clip_count,replay_hits,replay_misses,replay_forced,render_ms,gpu_ms,build_ms,submit_ms,present_ms,upload_bytes,upload_ranges,cmd_applied,cmd_drops\n");
+    fflush(csv_file);
+  }
 
   memset(&interval_stats, 0, sizeof(interval_stats));
+  memset(&capture_stats, 0, sizeof(capture_stats));
   memset(editor_buffer, 0, sizeof(editor_buffer));
   snprintf(editor_buffer, sizeof(editor_buffer),
            "// pathological text churn\n"
@@ -315,6 +599,8 @@ int main(int argc, char **argv) {
   memset(&editor_state, 0, sizeof(editor_state));
   editor_state.buffer = editor_buffer;
   editor_state.buffer_size = (int)sizeof(editor_buffer);
+  editor_state.buffer_len = (int)strlen(editor_buffer);
+  editor_state.content_revision = 1u;
   editor_state.cursor_idx = (int)strlen(editor_buffer);
   editor_state.selection_start = editor_state.cursor_idx;
   editor_state.selection_end = editor_state.cursor_idx;
@@ -330,7 +616,7 @@ int main(int argc, char **argv) {
 
   start_time = now_seconds();
   last_tick_time = start_time;
-  next_interval_time = start_time + 1.0;
+  next_interval_time = start_time + warmup_seconds + 1.0;
 
   while (!stygian_window_should_close(window)) {
     StygianEvent event;
@@ -341,6 +627,7 @@ int main(int argc, char **argv) {
     bool scene_dynamic_changed = false;
     bool overlay_changed = false;
     bool chrome_changed = false;
+    bool frame_is_first;
     bool repaint_pending;
     bool render_frame;
     bool eval_only_frame;
@@ -350,20 +637,22 @@ int main(int argc, char **argv) {
 
     stygian_widgets_begin_frame(ctx);
 
-    while (stygian_window_poll_event(window, &event)) {
-      StygianWidgetEventImpact impact =
-          stygian_widgets_process_event_ex(ctx, &event);
-      if (impact & STYGIAN_IMPACT_MUTATED_STATE)
-        event_mutated = true;
-      if (impact & STYGIAN_IMPACT_REQUEST_REPAINT)
-        event_requested = true;
-      if (impact & STYGIAN_IMPACT_REQUEST_EVAL)
-        event_eval_requested = true;
-      if (event.type == STYGIAN_EVENT_CLOSE)
-        stygian_window_request_close(window);
+    if (!unattended_bench) {
+      while (stygian_window_poll_event(window, &event)) {
+        StygianWidgetEventImpact impact =
+            stygian_widgets_process_event_ex(ctx, &event);
+        if (impact & STYGIAN_IMPACT_MUTATED_STATE)
+          event_mutated = true;
+        if (impact & STYGIAN_IMPACT_REQUEST_REPAINT)
+          event_requested = true;
+        if (impact & STYGIAN_IMPACT_REQUEST_EVAL)
+          event_eval_requested = true;
+        if (event.type == STYGIAN_EVENT_CLOSE)
+          stygian_window_request_close(window);
+      }
     }
 
-    if (!first_frame && !event_mutated && !event_requested &&
+    if (!unattended_bench && !first_frame && !event_mutated && !event_requested &&
         !event_eval_requested) {
       if (stygian_window_wait_event_timeout(window, &event, wait_ms)) {
         StygianWidgetEventImpact impact =
@@ -381,12 +670,14 @@ int main(int argc, char **argv) {
 
     current_time = now_seconds();
     dt = current_time - last_tick_time;
-    if (dt > (1.0 / 30.0)) {
+    if (tick_hz <= 0.0 || dt > (1.0 / tick_hz)) {
       tick_count++;
       last_tick_time = current_time;
       if (scenario == PERF_SCENARIO_OVERLAY) {
         overlay_changed = true;
       } else if (scenario == PERF_SCENARIO_SPARSE) {
+        scene_dynamic_changed = true;
+      } else if (scenario == PERF_SCENARIO_FULLHOT) {
         scene_dynamic_changed = true;
       } else if (scenario == PERF_SCENARIO_CLIP) {
         scene_dynamic_changed = true;
@@ -401,11 +692,14 @@ int main(int argc, char **argv) {
         }
         scene_dynamic_changed = true;
       } else if (scenario == PERF_SCENARIO_TEXT) {
-        size_t len = strlen(editor_buffer);
+        size_t len = (editor_state.buffer_len >= 0)
+                         ? (size_t)editor_state.buffer_len
+                         : strlen(editor_buffer);
         if (len + 3 < sizeof(editor_buffer)) {
           editor_buffer[len] = (char)('a' + (tick_count % 26u));
           editor_buffer[len + 1] = '\n';
           editor_buffer[len + 2] = '\0';
+          stygian_text_area_mark_text_dirty(&editor_state);
           editor_state.cursor_idx = (int)(len + 2u);
           editor_state.selection_start = editor_state.cursor_idx;
           editor_state.selection_end = editor_state.cursor_idx;
@@ -432,6 +726,7 @@ int main(int argc, char **argv) {
       }
       continue;
     }
+    frame_is_first = first_frame;
     first_frame = false;
 
     stygian_window_get_size(window, &width, &height);
@@ -460,8 +755,9 @@ int main(int argc, char **argv) {
         stygian_text(ctx, font, "Idle scenario: no active mutation path.",
                      40.0f, 112.0f, 18.0f, 0.8f, 0.85f, 0.9f, 1.0f);
       }
-    } else if (scenario == PERF_SCENARIO_SPARSE) {
-      render_sparse_static_scene(ctx);
+    } else if (scenario == PERF_SCENARIO_STATIC ||
+               scenario == PERF_SCENARIO_SPARSE) {
+      render_sparse_static_scene(ctx, scene_count, width, height);
     } else if (scenario == PERF_SCENARIO_SCROLL) {
       render_scroll_shell(ctx, width, height);
     } else if (scenario == PERF_SCENARIO_OVERLAY) {
@@ -481,14 +777,18 @@ int main(int argc, char **argv) {
 
     stygian_scope_begin(ctx, k_scope_scene_dynamic);
     if (scenario == PERF_SCENARIO_SPARSE) {
-      render_sparse_dynamic_scene(ctx, tick_count);
+      render_sparse_dynamic_scene(ctx, scene_count, mutate_count, width, height,
+                                  tick_count);
+    } else if (scenario == PERF_SCENARIO_FULLHOT) {
+      render_fullhot_scene(ctx, scene_count, width, height, tick_count);
     } else if (scenario == PERF_SCENARIO_CLIP) {
       render_clip_scene(ctx, tick_count, width, height);
     } else if (scenario == PERF_SCENARIO_SCROLL) {
       if (render_scroll_rows(ctx, font, &auto_scroll_y, width, height)) {
         scene_dynamic_changed = true;
       }
-    } else if (scenario == PERF_SCENARIO_TEXT) {
+    } else if (scenario == PERF_SCENARIO_TEXT ||
+               scenario == PERF_SCENARIO_TEXT_STATIC) {
       editor_state.x = 30.0f;
       editor_state.y = 74.0f;
       editor_state.w = (float)width - 60.0f;
@@ -513,7 +813,7 @@ int main(int argc, char **argv) {
       perf_scope_visible_prev = true;
     }
 
-    if (first_frame || event_mutated) {
+    if (frame_is_first || event_mutated) {
       stygian_scope_invalidate_next(ctx, k_scope_scene_static);
       stygian_scope_invalidate_next(ctx, k_scope_scene_dynamic);
     } else {
@@ -533,16 +833,36 @@ int main(int argc, char **argv) {
       stygian_scope_invalidate_next(ctx, k_scope_perf);
       perf_scope_visible_prev = false;
     }
+    if (raw_mode) {
+      stygian_set_repaint_source(ctx, "benchmark_raw");
+      stygian_request_repaint_after_ms(ctx, 0u);
+    }
 
     stygian_widgets_commit_regions();
     stygian_end_frame(ctx);
     stygian_mini_perf_accumulate(&perf, eval_only_frame);
-    interval_add_sample(ctx, &interval_stats, eval_only_frame);
-
     current_time = now_seconds();
-    if (current_time >= next_interval_time) {
+    if (!capture_started && (current_time - start_time) >= warmup_seconds) {
+      capture_started = true;
+      capture_start_time = current_time;
+      next_interval_time = capture_start_time + 1.0;
+      second_index = 0u;
+      memset(&interval_stats, 0, sizeof(interval_stats));
+      memset(&capture_stats, 0, sizeof(capture_stats));
+      printf("BENCHNOTE capture_start=%.3f\n", capture_start_time - start_time);
+    }
+    if (capture_started) {
+      interval_add_sample(ctx, &interval_stats, eval_only_frame);
+      interval_add_sample(ctx, &capture_stats, eval_only_frame);
+    }
+
+    if (capture_started && current_time >= next_interval_time) {
+      PerfIntervalRow row = interval_row_make(&interval_stats, second_index + 1u, ctx);
       second_index++;
-      interval_log(&interval_stats, scenario_label, second_index, ctx);
+      interval_log(&row, scenario_label, scene_count, mutate_count, raw_mode,
+                   tick_hz);
+      interval_write_csv(csv_file, &row, scenario_label, scene_count,
+                         mutate_count, raw_mode, tick_hz);
       memset(&interval_stats, 0, sizeof(interval_stats));
       next_interval_time += 1.0;
     }
@@ -552,13 +872,23 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (interval_stats.samples > 0u) {
+  if (capture_started && interval_stats.samples > 0u) {
+    PerfIntervalRow row = interval_row_make(&interval_stats, second_index + 1u, ctx);
     second_index++;
-    interval_log(&interval_stats, scenario_label, second_index, ctx);
+    interval_log(&row, scenario_label, scene_count, mutate_count, raw_mode,
+                 tick_hz);
+    interval_write_csv(csv_file, &row, scenario_label, scene_count,
+                       mutate_count, raw_mode, tick_hz);
+  }
+  if (capture_started && capture_stats.samples > 0u) {
+    summary_log(&capture_stats, scenario_label, scene_count, mutate_count,
+                raw_mode, tick_hz, now_seconds() - capture_start_time);
   }
 
   if (font)
     stygian_font_destroy(ctx, font);
+  if (csv_file)
+    fclose(csv_file);
   stygian_destroy(ctx);
   stygian_window_destroy(window);
   return 0;

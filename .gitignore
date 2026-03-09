@@ -25,3 +25,9 @@ assets/sgc/*
 !assets/sgc/LICENSE_OPENMOJI_CC-BY-SA-4.0.txt
 !assets/sgc/LICENSE_TWEMOJI_GRAPHICS_CC-BY-4.0.txt
 !assets/sgc/LICENSE_NOTO_EMOJI_OFL-1.1.txt
+
+# Local-only capture workload (not published yet)
+capture/
+
+# Private local notes and application drafts
+notes/

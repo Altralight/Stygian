@@ -33,6 +33,39 @@ static void mul3x3_vec(const float m[9], float x, float y, float z, float *ox,
   *oz = m[6] * x + m[7] * y + m[8] * z;
 }
 
+static bool profile_uses_icc_d50_xyz(const StygianColorProfile *profile) {
+  if (!profile)
+    return false;
+  if (profile->space != STYGIAN_COLOR_SPACE_UNKNOWN)
+    return false;
+  return strncmp(profile->name, "ICC ", 4) == 0;
+}
+
+static void adapt_xyz_between_whitepoints(const StygianColorProfile *src,
+                                          const StygianColorProfile *dst,
+                                          float xyz[3]) {
+  static const float d65_to_d50[9] = {
+      1.0478112f, 0.0228866f, -0.0501270f, 0.0295424f, 0.9904844f, -0.0170491f,
+      -0.0092345f, 0.0150436f, 0.7521316f,
+  };
+  static const float d50_to_d65[9] = {
+      0.9555766f, -0.0230393f, 0.0631636f, -0.0282895f, 1.0099416f, 0.0210077f,
+      0.0122982f, -0.0204830f, 1.3299098f,
+  };
+  float x = xyz[0];
+  float y = xyz[1];
+  float z = xyz[2];
+  bool src_d50 = profile_uses_icc_d50_xyz(src);
+  bool dst_d50 = profile_uses_icc_d50_xyz(dst);
+  if (src_d50 == dst_d50)
+    return;
+  if (!src_d50 && dst_d50) {
+    mul3x3_vec(d65_to_d50, x, y, z, &xyz[0], &xyz[1], &xyz[2]);
+  } else {
+    mul3x3_vec(d50_to_d65, x, y, z, &xyz[0], &xyz[1], &xyz[2]);
+  }
+}
+
 static bool invert3x3(const float m[9], float out[9]) {
   float a = m[0], b = m[1], c = m[2];
   float d = m[3], e = m[4], f = m[5];
@@ -163,6 +196,13 @@ void stygian_color_transform_rgb_f32(const StygianColorProfile *src,
   }
 
   mul3x3_vec(src->rgb_to_xyz, in_r, in_g, in_b, &x, &y, &z);
+  {
+    float xyz[3] = {x, y, z};
+    adapt_xyz_between_whitepoints(src, dst, xyz);
+    x = xyz[0];
+    y = xyz[1];
+    z = xyz[2];
+  }
   mul3x3_vec(dst->xyz_to_rgb, x, y, z, &out_r, &out_g, &out_b);
 
   out_r = clamp01(out_r);

@@ -88,6 +88,8 @@ typedef struct StygianTextArea {
   int cursor_idx;      // Byte index
   int selection_start; // Byte index (-1 if no selection)
   int selection_end;   // Byte index (-1 if no selection)
+  int buffer_len;      // -1 = unknown, otherwise cached byte length
+  uint32_t content_revision; // bump when external code mutates buffer in-place
   float scroll_y;
   float total_height; // Computed
   bool focused;
@@ -95,6 +97,7 @@ typedef struct StygianTextArea {
 
 bool stygian_text_area(StygianContext *ctx, StygianFont font,
                        StygianTextArea *state);
+void stygian_text_area_mark_text_dirty(StygianTextArea *state);
 
 // Vertical scrollbar for custom panels/areas.
 // content_height: total scrollable content height in pixels.
@@ -585,6 +588,7 @@ typedef struct StygianGraphState {
   float pan_x, pan_y;
   float zoom;
   bool snap_enabled;
+  bool disable_grid;
   float snap_size;
   float pin_y_offset;
   float pin_size;
@@ -670,6 +674,7 @@ int stygian_graph_pick_node(const StygianGraphState *state,
 enum {
   STYGIAN_WIRE_SMOOTH = 0,
   STYGIAN_WIRE_SHARP = 1,
+  STYGIAN_WIRE_LINE = 2,
 };
 void stygian_graph_set_wire_style(StygianGraphState *state, int style);
 

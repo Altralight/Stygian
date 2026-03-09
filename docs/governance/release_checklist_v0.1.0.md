@@ -22,6 +22,23 @@
 - [ ] Integration quickstart uses unified compile entrypoints.
 - [ ] Perf gate policy points to `compile/windows/run_perf_gates.bat`.
 
+## Linux / macOS Gate (CI)
+- [ ] `linux-build` CI job passes on `ubuntu-latest`
+- [ ] `macos-build` CI job passes on `macos-latest`
+- [ ] `tier1_safety` compiles and passes headless on Linux (xvfb)
+
+## Sponsor / Funding Readiness
+- [ ] README has no "infancy" language
+- [ ] CI badges visible on README
+- [ ] CONTRIBUTING.md exists
+- [ ] CHANGELOG.md exists
+- [ ] docs/perf/benchmark_comparison.md has real measurements filled in
+- [ ] docs/architecture/pipeline_diagram.md exists
+- [ ] docs/reference/core/ has stygian.h API reference
+- [ ] node_graph_demo compiles and runs
+- [ ] Widget taxonomy clearly separates Shipped / In Progress / Planned
+- [ ] At least one screenshot in repo (screenshots/ directory or assets/)
+
 ## First Release Tag
 - [ ] Tag created: `v0.1.0`
 - [ ] Tag annotation includes summary of:

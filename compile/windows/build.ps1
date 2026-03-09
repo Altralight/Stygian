@@ -3,7 +3,8 @@ param(
   [string]$Group,
   [string]$Clang = "",
   [string]$VulkanSdk = "",
-  [switch]$NoShaderCheck
+  [switch]$NoShaderCheck,
+  [switch]$EnableCapture
 )
 
 $ErrorActionPreference = "Stop"
@@ -79,6 +80,28 @@ function Invoke-TargetBuild {
     $args += "-D$def"
   }
 
+  $captureRequested = $EnableCapture -or ($env:STYGIAN_ENABLE_CAPTURE -eq "1")
+  if ($captureRequested) {
+    $captureInclude = "capture/include"
+    $captureSourceRoot = "capture/src"
+    if (-not (Test-Path $captureInclude) -or -not (Test-Path $captureSourceRoot)) {
+      throw "[$Name] capture requested but missing local capture sources under capture/ (expected capture/include + capture/src)"
+    }
+    $captureSources = Get-ChildItem -Path $captureSourceRoot -Recurse -Filter "*.c" |
+      Sort-Object FullName |
+      ForEach-Object { $_.FullName }
+    if (-not $captureSources -or $captureSources.Count -eq 0) {
+      throw "[$Name] capture requested but no C sources found under $captureSourceRoot"
+    }
+    $args += "-DSTYGIAN_CAPTURE_ENABLED=1"
+    $args += "-I"
+    $args += $captureInclude
+    $args += "-I"
+    $args += $captureSourceRoot
+    $args += $captureSources
+    Write-Host "[$Name] Capture workload enabled (local capture/ sources)"
+  }
+
   $args += $targetDef.entry_source
   $args += $manifest.common.sources
   if ($targetDef.backend -eq "vk") {
@@ -102,6 +125,13 @@ function Invoke-TargetBuild {
   $args += "-lopengl32"
   $args += "-lz"
   $args += "-lzstd"
+  if ($captureRequested) {
+    $args += "-lole32"
+    $args += "-loleaut32"
+    $args += "-lmfplat"
+    $args += "-lmfreadwrite"
+    $args += "-lmfuuid"
+  }
 
   Write-Host "[$Name] Building..."
   & $Clang @args

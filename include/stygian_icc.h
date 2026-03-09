@@ -1,4 +1,4 @@
-// stygian_icc.h - Minimal ICC profile loader for color-space selection
+// stygian_icc.h - ICC profile loader for output color-space selection
 #ifndef STYGIAN_ICC_H
 #define STYGIAN_ICC_H
 

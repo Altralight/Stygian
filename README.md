@@ -1,16 +1,33 @@
 # Stygian
+[![Windows](https://img.shields.io/github/actions/workflow/status/StygianFade/Stygian/stygian-windows.yml?branch=main&label=Windows)](https://github.com/StygianFade/Stygian/actions/workflows/stygian-windows.yml)
+[![Linux](https://img.shields.io/github/actions/workflow/status/StygianFade/Stygian/stygian-linux.yml?branch=main&label=Linux)](https://github.com/StygianFade/Stygian/actions/workflows/stygian-linux.yml)
+[![macOS](https://img.shields.io/github/actions/workflow/status/StygianFade/Stygian/stygian-macos.yml?branch=main&label=macOS)](https://github.com/StygianFade/Stygian/actions/workflows/stygian-macos.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-GPU-accelerated SDF UI rendering library.
+GPU-accelerated SDF UI library for C23. Single draw call. Invalidation-driven. Cross-platform.
 
-## Features
+## What It Is
 
-- Signed Distance Field (SDF) based rendering
-- MTSDF text with subpixel accuracy
-- Custom window chrome and titlebar
-- Hardware-accelerated via OpenGL 4.3+
-- Single-header friendly
+Stygian is a native C23 UI library built around a DDI-style runtime: input and app logic classify impact, command producers publish mutations, the core commits deterministically into GPU-resident SoA buffers, then the frame either renders or skips. The point is simple: static UI should not rebuild and redraw just because input is still flowing through the app.
 
-  
+The core data model is triple-buffered SoA storage split into hot geometry/state, appearance, and effects buffers. Elements live on the GPU between frames, dirty chunk ranges are tracked explicitly, and clean scopes replay without re-uploading clean data. On a fully static frame, Stygian can stay in an eval-only or deep-wait path with zero upload and no forced redraw.
+
+Rendering is SDF-first across the stack: window chrome, primitive shapes, editor wires, and text all feed the same GPU-native rendering model instead of dropping back to a pile of CPU triangles. OpenGL 4.3 and Vulkan access points are already implemented. Text uses MTSDF with the Triad glyph pipeline and compression policy selection for iGPU/dGPU targets. Output color management includes ICC-aware monitor binding on Win32. The current codebase also includes scope invalidation/replay, multi-producer command buffers with deterministic commit, custom titlebar and borderless behavior, dock/tabs, a node graph editor path, and a shipped widget baseline aimed at real desktop tools rather than toy demos.
+
+## Platform Support
+
+| Platform | Backend | Status |
+|----------|---------|--------|
+| Windows (Win32) | OpenGL 4.3 | Full |
+| Windows (Win32) | Vulkan | Full |
+| Linux (X11) | OpenGL 4.3 | Building |
+| Linux (X11) | Vulkan | Building |
+| macOS (Cocoa) | OpenGL | Building |
+
+## Why Not Dear ImGui / Clay?
+
+Stygian is not trying to be another immediate-mode triangle UI. The differentiation is structural: SDF-first rendering for shapes, chrome, wires, and text; invalidation-driven rendering instead of redraw-on-input; GPU-resident SoA element storage instead of per-frame CPU vertex rebuilds; generational element handles with deterministic commit; ICC-aware output handling; and MTSDF text with Triad glyph compression policy. Dear ImGui and Clay solve different problems; neither gives you this data-driven immediate DDI runtime with persistent scene/state backing, GPU-native SDF rendering, or color-management path.
+
 ## Quick Start
 
 This program is the exact source used in `examples/quickwindow.c`.
@@ -69,167 +86,105 @@ int main(void) {
 }
 ```
 
-## Build and Run (Windows, Novice Path)
+## Architecture
 
-1. Build shader outputs (required once per shader change):
-   - `compile\windows\build_shaders.bat`
-2. Build the quick-start example (`examples/quickwindow.c`):
-   - `compile\windows\build_quickwindow.bat`
-3. Run it from repo root:
-   - `build\quickwindow.exe`
+Frame pipeline: `Collect -> Commit -> Evaluate -> Render/Skip`
 
-## Tiny Smoke Tests (Windows)
+Runtime model details live in [docs/architecture/runtime_model.md](docs/architecture/runtime_model.md). A pipeline diagram for docs and onboarding use lives in [docs/architecture/pipeline_diagram.md](docs/architecture/pipeline_diagram.md).
 
-1. Default quick test:
-   - `compile\windows\build.bat`
-   - `build\quickwindow.exe`
-2. Borderless window:
-   - `compile\windows\build_quickwindow_borderless.bat`
-   - `build\quickwindow_borderless.exe`
-3. Custom titlebar window:
-   - `compile\windows\build_quickwindow_custom_titlebar.bat`
-   - `build\quickwindow_custom_titlebar.exe`
-4. Custom titlebar window (Vulkan):
-   - `compile\windows\build_quickwindow_custom_titlebar_vk.bat`
-   - `build\quickwindow_custom_titlebar_vk.exe`
-5. Build all quick smoke tests at once:
-   - `compile\windows\build_quick_smoke.bat`
+## Benchmarks
 
-## Windows Borderless Maximize Behavior
+Current performance notes and comparison methodology live in [docs/perf/benchmark_comparison.md](docs/perf/benchmark_comparison.md).
 
-Borderless maximize on Windows is work-area maximize (taskbar remains visible),
-not true fullscreen.
+The Windows comparison harness, scene coverage, and toolchain caveats live in [benchmarks/comparison/README.md](benchmarks/comparison/README.md).
 
-If you want fullscreen-style monitor coverage, that is a different mode and not
-the default maximize behavior.
+Read the benchmark material in this order:
 
-On Windows, OpenGL borderless main windows keep strict `WS_POPUP` semantics
-with manual maximize/restore sizing in the core Win32 backend (`window/platform/stygian_win32.c`).
+- `docs/perf/benchmark_comparison.md` for the current Stygian baseline
+- `build/comparison/latest/summary.md` -> `Stygian Native Modes` for Stygian's native GPU-path measurements
+- `build/comparison/latest/summary.md` -> `CPU Builder Rows` for the cross-library CPU authoring lane
 
-Vulkan borderless path remains unchanged in this iteration.
+## Screenshots
 
-`quickwindow_custom_titlebar` uses an event-paced loop to avoid maximize hitch
-behavior in unstable OpenGL vsync environments.
+Node graph demo:
 
-## Custom Titlebar API (Win32-first)
+![Stygian node graph demo](screenshots/node_graph_demo.png)
 
-Custom titlebar behavior is now exposed through core window APIs:
+Text editor mini:
 
-- `stygian_window_get_titlebar_hints`
-- `stygian_window_set_titlebar_behavior`
-- `stygian_window_begin_system_move`
-- `stygian_window_titlebar_double_click`
-- `stygian_window_get_titlebar_menu_actions`
-- `stygian_window_apply_titlebar_menu_action`
-- `stygian_window_set_fullscreen` / `stygian_window_is_fullscreen`
+![Stygian text editor mini](screenshots/text_editor_mini.png)
 
-Defaults:
+Calculator mini:
 
-- Double-click on titlebar toggles maximize/restore.
-- Hover-menu behavior can be enabled/disabled per window via `StygianTitlebarBehavior`.
-- Win32 provides native button-order hints (`right`) and snap/fullscreen action presets.
+![Stygian calculator mini](screenshots/calculator_mini.png)
 
-Current platform status:
-- Win32: implemented.
-- Linux/macOS backends: API contract is present with deterministic no-crash fallback stubs.
+## Widgets
 
-  ## Backend Switching Rules (Strict)
+Shipped widgets:
 
-All three layers must match:
+- [Shipped] `button`, `button_ex`
+- [Shipped] `slider`, `slider_ex`
+- [Shipped] `checkbox`, `radio_button`
+- [Shipped] `text_input`, `text_area`
+- [Shipped] `scrollbar_v`
+- [Shipped] `tooltip`
+- [Shipped] `context_menu`
+- [Shipped] `modal`
+- [Shipped] `panel`
+- [Shipped] `perf_widget`
+- [Shipped] `file_explorer`, `breadcrumb`
+- [Shipped] `output_panel`, `problems_panel`
+- [Shipped] `debug_toolbar`, `call_stack`
+- [Shipped] `coordinate_input`, `snap_settings`
+- [Shipped] `cad_gizmo`, `layer_manager`
+- [Shipped] `scene_viewport`, `scene_hierarchy`, `inspector`, `asset_browser`, `console_log`
+- [Shipped] `split_panel`, `menu_bar`, `toolbar`
+- [Shipped] `node_graph` helpers and node/wire drawing path
 
-1. `StygianConfig.backend` in source.
-2. Window render flag in source (`STYGIAN_WINDOW_OPENGL` or
-   `STYGIAN_WINDOW_VULKAN`).
-3. Build target backend in `compile/targets.json` (`"gl"` or `"vk"`).
+Roadmap and broader taxonomy live in [widgets/WIDGET_TAXONOMY.md](widgets/WIDGET_TAXONOMY.md).
 
-For quickwindow, switch backend by target, not by manual constant edits:
+## Build
 
-- OpenGL path: `compile\windows\build_quickwindow.bat` -> `build\quickwindow.exe`
-- Vulkan path: `compile\windows\build_quickwindow_vk.bat` -> `build\quickwindow_vk.exe`
+Windows:
 
-Changing only `STYGIAN_BACKEND_OPENGL` to `STYGIAN_BACKEND_VULKAN` can compile
-but still be mismatched at runtime if the target backend/flags are not aligned.
+1. Build shader outputs when they need refresh: `compile\windows\build_shaders.bat`
+2. Build a manifest target through the unified entrypoint:
+   `powershell -NoProfile -ExecutionPolicy Bypass -File compile\run.ps1 -Target quickwindow`
+3. Run the binary from `build\`
 
-## Backends
+Linux:
 
-- `backends/stygian_ap_gl.c` - OpenGL access point
-- `backends/stygian_ap_vk.c` - Vulkan access point
+1. Make scripts executable: `chmod +x compile/run.sh compile/linux/build.sh`
+2. Build a target: `compile/run.sh --target quickwindow`
 
-## Build Targets
+macOS:
 
-Manifest-driven build metadata lives in:
+1. Make scripts executable: `chmod +x compile/run.sh compile/macos/build.sh`
+2. Build a target: `compile/run.sh --target quickwindow`
 
-- `compile/targets.json`
+Manifest targets are declared in [compile/targets.json](compile/targets.json).
 
-Platform runners:
+### Backend Switching Rules
 
-- Unified:
-  - Windows: `compile/run.ps1`
-  - Linux/macOS: `compile/run.sh`
-- Windows: `compile/windows/build.ps1`
-- Linux: `compile/linux/build.sh`
-- macOS: `compile/macos/build.sh`
+All three layers need to agree:
 
-Windows convenience wrapper scripts:
+1. `StygianConfig.backend` in source
+2. window render flag in source: `STYGIAN_WINDOW_OPENGL` or `STYGIAN_WINDOW_VULKAN`
+3. target backend in [compile/targets.json](compile/targets.json): `"gl"` or `"vk"`
 
-- `compile/windows/build.bat` (default quick test)
-- `compile/windows/build_quickwindow.bat`
-- `compile/windows/build_quickwindow_vk.bat`
-- `compile/windows/build_quickwindow_borderless.bat`
-- `compile/windows/build_quickwindow_custom_titlebar.bat`
-- `compile/windows/build_quickwindow_custom_titlebar_vk.bat`
-- `compile/windows/build_quick_smoke.bat`
-- `compile/windows/build_text_editor_mini.bat`
-- `compile/windows/build_calculator_mini.bat`
-- `compile/windows/build_calendar_mini.bat`
-- `compile/windows/build_perf_pathological_suite.bat`
-- `compile/windows/build_mini_apps_all.bat`
-
-Perf gate command:
-
-- `compile/windows/run_perf_gates.bat`
+If only one of those changes, the build can still compile and then lie to you at runtime.
 
 ## Verification
 
-Tiered runtime/safety checks:
+Tiered checks:
 
 - Tier 1: `tests/run_tier1_safety.ps1`
 - Tier 2: `tests/run_tier2_runtime.ps1`
 - Tier 3: `tests/run_tier3_misuse.ps1`
 - All tiers: `tests/run_all.ps1`
 
-Build-only CI check target list:
+## License
 
-- `tier1_safety`
-- `tier2_runtime`
-- `tier3_misuse`
-- `calculator_mini`
+Stygian source code is MIT licensed. See [LICENSE](LICENSE).
 
-CI workflow:
-
-- Workflow file: `.github/workflows/stygian-ci.yml`
-- Automatic on `push`/`pull_request`: Windows build checks (no shader output requirement).
-- Manual (`workflow_dispatch`, `run_runtime=true`):
-  best-effort runtime tier execution via `tests/run_all.ps1`.
-
-## Project Status and Limitations
-
-- Stygian is still in its infancy and remains a work in progress.
-- APIs, behavior, and internals may change as real-project usage hardens the system.
-- Performance is improving, but it may not consistently match expectations across all
-  workloads and hardware.
-- The MIT license applies: software is provided as-is, with no warranty of fitness.
-- Day-to-day central repo maintenance is limited; updates are occasional.
-- Current primary focus is using Stygian in real products (IDE, game engine, web
-  browser, and other tools), then upstreaming improvements when possible.
-- If you want to partner or co-maintain, collaboration is welcome.
-
-  ## License
-
-- Source code: MIT (`LICENSE`).
-- Emoji SGC assets under `assets/sgc/` include third-party licensed artwork.
-- Third-party notices and bundled licenses:
-  - `assets/sgc/THIRD_PARTY_NOTICES.md`
-  - `assets/sgc/LICENSE_OPENMOJI_CC-BY-SA-4.0.txt`
-  - `assets/sgc/LICENSE_TWEMOJI_GRAPHICS_CC-BY-4.0.txt`
-  - `assets/sgc/LICENSE_NOTO_EMOJI_OFL-1.1.txt`
+The SGC emoji assets under `assets/sgc/` are third-party works with their own licenses and attribution requirements. Keep those notices intact when redistributing assets.

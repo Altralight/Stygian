@@ -26,6 +26,15 @@ Optional quick tests:
 - Custom titlebar: `compile\windows\build_quickwindow_custom_titlebar.bat`
 - Custom titlebar (Vulkan):
   `compile\windows\build_quickwindow_custom_titlebar_vk.bat`
+- Capture smoke (local capture workload):
+  `compile\windows\build_quickwindow_capture_smoke.bat`
+- Capture smoke Vulkan fallback path:
+  `compile\windows\build_quickwindow_capture_smoke_vk.bat`
+  (v1 records video via Vulkan readback; currently synchronous and lower-throughput)
+- Editor bootstrap (OpenGL):
+  `compile\windows\build_stygian_editor_bootstrap.bat`
+- Editor bootstrap (Vulkan):
+  `compile\windows\build_stygian_editor_bootstrap_vk.bat`
 - All quick smoke targets: `compile\windows\build_quick_smoke.bat`
 
 Borderless maximize on Windows is work-area maximize (taskbar remains visible),
@@ -79,6 +88,19 @@ For quickwindow:
   `powershell -File compile/run.ps1 -Target quickwindow_custom_titlebar`
 - Custom titlebar Vulkan target:
   `powershell -File compile/run.ps1 -Target quickwindow_custom_titlebar_vk`
+- Capture smoke target:
+  `powershell -File compile/run.ps1 -Target quickwindow_capture_smoke -EnableCapture`
+- Capture smoke Vulkan target:
+  `powershell -File compile/run.ps1 -Target quickwindow_capture_smoke_vk -EnableCapture`
+  (v1 records video via Vulkan readback; currently synchronous and lower-throughput)
+- Editor bootstrap target:
+  `powershell -File compile/run.ps1 -Target stygian_editor_bootstrap`
+- Editor bootstrap Vulkan target:
+  `powershell -File compile/run.ps1 -Target stygian_editor_bootstrap_vk`
+- Capture MP4 path tags BT.709 primaries/matrix + sRGB/709 transfer metadata
+  and uses BT.709 full-range RGB->NV12 conversion in local capture sources.
+- Capture MF writer init now retries with hardware transforms on/off and null
+  attributes for broader machine compatibility.
 - Quick smoke group: `powershell -File compile/run.ps1 -Group quick_smoke`
 - Unified Windows target: `powershell -File compile/run.ps1 -Target text_editor_mini`
 - Unified Windows group: `powershell -File compile/run.ps1 -Group mini_apps_all`
@@ -107,3 +129,5 @@ For quickwindow:
   `-NoShaderCheck`.
 - Runtime tier execution (`tests/run_all.ps1`) is available as a manual
   workflow dispatch path (`run_runtime=true`) and runs best-effort.
+- `capture/` remains ignored/local until MP4 stability is verified on target
+  machines.

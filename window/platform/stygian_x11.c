@@ -109,6 +109,10 @@ bool stygian_window_is_focused(StygianWindow *win) {
   (void)win;
   return false;
 }
+uint32_t stygian_window_get_display_change_serial(StygianWindow *win) {
+  (void)win;
+  return 0u;
+}
 void stygian_window_get_titlebar_hints(StygianWindow *win,
                                        StygianTitlebarHints *out_hints) {
   (void)win;

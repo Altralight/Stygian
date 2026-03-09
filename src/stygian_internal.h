@@ -421,6 +421,13 @@ struct StygianContext {
   StygianTriadRuntime *triad_runtime;
   StygianColorProfile output_color_profile;
   StygianColorProfile glyph_source_color_profile;
+  bool output_icc_auto_enabled;
+  bool output_icc_auto_applied;
+  uintptr_t output_icc_monitor_key;
+  char output_icc_path[260];
+  uint64_t output_icc_last_probe_ms;
+  uint32_t output_icc_probe_interval_ms;
+  uint32_t output_icc_window_serial_seen;
   bool glyph_color_transform_enabled;
 
   // Render layers (optional multi-pass draws)
@@ -452,9 +459,11 @@ struct StygianContext {
   uint32_t last_frame_reason_flags;
   uint32_t last_frame_eval_only;
   uint32_t frame_index;
-  uint64_t frame_begin_cpu_ms;
+  double frame_begin_cpu_ms;
   bool skip_frame;         // DDI: True if all scopes clean, skip submit/swap
   bool eval_only_frame;    // Evaluate widgets/state but skip GPU submit/swap
+  bool present_enabled;    // Benchmark hook: skip GL swap, keep submit timing
+  bool gpu_timing_enabled; // Bench mode can kill query overhead on purpose
   StygianFrameIntent frame_intent;
   uint32_t frames_skipped; // DDI: Counter for no-op frames
 

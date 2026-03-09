@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -54,14 +55,13 @@ static inline bool stygian_get_binary_dir(char *buffer, size_t size) {
 #else
   if (!buffer || size == 0)
     return false;
-  ssize_t len = 0;
 #ifdef __APPLE__
   uint32_t bufsize = (uint32_t)size;
   if (_NSGetExecutablePath(buffer, &bufsize) != 0)
     return false;
-  len = strlen(buffer);
+  buffer[size - 1] = '\0';
 #else
-  len = readlink("/proc/self/exe", buffer, size - 1);
+  ssize_t len = readlink("/proc/self/exe", buffer, size - 1);
   if (len == -1)
     return false;
   buffer[len] = '\0';

@@ -18,16 +18,24 @@
 #define STYGIAN_MINI_RENDERER_NAME "OpenGL"
 #endif
 
+static int count_editor_lines(const char *text) {
+  int lines = 1;
+  if (!text || !text[0])
+    return 1;
+  while (*text) {
+    if (*text == '\n')
+      lines++;
+    text++;
+  }
+  return lines;
+}
+
 int main(void) {
   const StygianScopeId k_scope_chrome = 0x4001u;
   const StygianScopeId k_scope_gutter = 0x4002u;
   const StygianScopeId k_scope_rows = 0x4003u;
-  const StygianScopeId k_scope_caret =
-      STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4004u;
-  const StygianScopeId k_scope_selection =
-      STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4005u;
   const StygianScopeId k_scope_perf =
-      STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4006u;
+      STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4004u;
 
   StygianWindowConfig win_cfg = {
       .title = "Stygian Text Editor Mini",
@@ -43,6 +51,7 @@ int main(void) {
   StygianContext *ctx = stygian_create(&cfg);
   if (!ctx)
     return 1;
+  stygian_set_vsync(ctx, false);
 
   StygianFont font =
       stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
@@ -54,6 +63,10 @@ int main(void) {
 
   stygian_mini_perf_init(&perf, "text_editor_mini");
   perf.widget.renderer_name = STYGIAN_MINI_RENDERER_NAME;
+  perf.widget.stress_mode = true;
+  perf.widget.idle_hz = 1000u;
+  perf.widget.active_hz = 1000u;
+  perf.widget.max_stress_hz = 1000u;
   memset(editor_buffer, 0, sizeof(editor_buffer));
   snprintf(editor_buffer, sizeof(editor_buffer),
            "// Stygian mini editor\n"
@@ -63,6 +76,8 @@ int main(void) {
   memset(&editor_state, 0, sizeof(editor_state));
   editor_state.buffer = editor_buffer;
   editor_state.buffer_size = (int)sizeof(editor_buffer);
+  editor_state.buffer_len = (int)strlen(editor_buffer);
+  editor_state.content_revision = 1u;
   editor_state.cursor_idx = (int)strlen(editor_buffer);
   editor_state.selection_start = editor_state.cursor_idx;
   editor_state.selection_end = editor_state.cursor_idx;
@@ -87,11 +102,22 @@ int main(void) {
         event_requested = true;
       if (impact & STYGIAN_IMPACT_REQUEST_EVAL)
         event_eval_requested = true;
+      if (event.type == STYGIAN_EVENT_KEY_DOWN && !event.key.repeat) {
+        if (event.key.key == STYGIAN_KEY_F1) {
+          show_perf = !show_perf;
+          event_requested = true;
+        } else if (event.key.key == STYGIAN_KEY_F11) {
+          stygian_window_set_fullscreen(
+              window, !stygian_window_is_fullscreen(window));
+          event_requested = true;
+        }
+      }
       if (event.type == STYGIAN_EVENT_CLOSE)
         stygian_window_request_close(window);
     }
 
     if (!first_frame && !event_mutated && !event_requested &&
+        !stygian_has_pending_repaint(ctx) &&
         !event_eval_requested) {
       if (stygian_window_wait_event_timeout(window, &event, wait_ms)) {
         StygianWidgetEventImpact impact =
@@ -102,12 +128,23 @@ int main(void) {
           event_requested = true;
         if (impact & STYGIAN_IMPACT_REQUEST_EVAL)
           event_eval_requested = true;
+        if (event.type == STYGIAN_EVENT_KEY_DOWN && !event.key.repeat) {
+          if (event.key.key == STYGIAN_KEY_F1) {
+            show_perf = !show_perf;
+            event_requested = true;
+          } else if (event.key.key == STYGIAN_KEY_F11) {
+            stygian_window_set_fullscreen(
+                window, !stygian_window_is_fullscreen(window));
+            event_requested = true;
+          }
+        }
         if (event.type == STYGIAN_EVENT_CLOSE)
           stygian_window_request_close(window);
       }
     }
 
     {
+      bool showcase_redraw = true;
       bool repaint_pending = stygian_has_pending_repaint(ctx);
       bool render_frame = first_frame || event_mutated || repaint_pending;
       bool eval_only_frame =
@@ -117,6 +154,14 @@ int main(void) {
       float content_y;
       float content_w;
       float content_h;
+      int total_lines;
+      int first_visible_line;
+      int visible_line_capacity;
+      int prev_cursor_idx;
+      int prev_selection_start;
+      int prev_selection_end;
+      float prev_scroll_y;
+      bool prev_focused;
 
       if (!render_frame && !eval_only_frame)
         continue;
@@ -145,15 +190,32 @@ int main(void) {
       content_y = 40.0f;
       content_w = (float)width;
       content_h = (float)height - 40.0f;
+      total_lines = count_editor_lines(editor_state.buffer);
+      first_visible_line = (int)(editor_state.scroll_y / 18.0f);
+      if (first_visible_line < 0)
+        first_visible_line = 0;
+      visible_line_capacity = (int)(content_h / 18.0f) + 2;
+      prev_cursor_idx = editor_state.cursor_idx;
+      prev_selection_start = editor_state.selection_start;
+      prev_selection_end = editor_state.selection_end;
+      prev_scroll_y = editor_state.scroll_y;
+      prev_focused = editor_state.focused;
 
       stygian_scope_begin(ctx, k_scope_gutter);
       stygian_rect(ctx, content_x, content_y, 64.0f, content_h, 0.09f, 0.11f,
                    0.14f, 1.0f);
       if (font) {
-        for (int line = 0; line < 40; line++) {
+        int line_end = first_visible_line + visible_line_capacity;
+        if (line_end > total_lines)
+          line_end = total_lines;
+        for (int line = first_visible_line; line < line_end; line++) {
           char label[16];
+          float line_y = content_y + 8.0f +
+                         (float)(line - first_visible_line) * 18.0f -
+                         (editor_state.scroll_y -
+                          (float)(first_visible_line * 18));
           snprintf(label, sizeof(label), "%d", line + 1);
-          stygian_text(ctx, font, label, 10.0f, content_y + 8.0f + line * 18.0f,
+          stygian_text(ctx, font, label, 10.0f, line_y,
                        13.0f, 0.55f, 0.62f, 0.72f, 1.0f);
         }
       }
@@ -167,21 +229,12 @@ int main(void) {
       if (stygian_text_area(ctx, font, &editor_state)) {
         rows_changed = true;
       }
-      stygian_scope_end(ctx);
-
-      stygian_scope_begin(ctx, k_scope_selection);
-      if (editor_state.focused && editor_state.selection_start !=
-                                     editor_state.selection_end) {
-        stygian_rect(ctx, editor_state.x + 6.0f, editor_state.y + 6.0f,
-                     editor_state.w - 12.0f, 2.0f, 0.35f, 0.52f, 0.78f, 0.45f);
-      }
-      stygian_scope_end(ctx);
-
-      stygian_scope_begin(ctx, k_scope_caret);
-      if (editor_state.focused) {
-        stygian_rect(ctx, editor_state.x + editor_state.w - 4.0f,
-                     editor_state.y + editor_state.h - 20.0f, 2.0f, 14.0f,
-                     0.95f, 0.95f, 0.95f, 1.0f);
+      if (editor_state.cursor_idx != prev_cursor_idx ||
+          editor_state.selection_start != prev_selection_start ||
+          editor_state.selection_end != prev_selection_end ||
+          editor_state.scroll_y != prev_scroll_y ||
+          editor_state.focused != prev_focused) {
+        rows_changed = true;
       }
       stygian_scope_end(ctx);
 
@@ -191,18 +244,27 @@ int main(void) {
         stygian_scope_end(ctx);
       }
 
-      if (chrome_changed) {
+      if (chrome_changed || showcase_redraw) {
         stygian_scope_invalidate_next(ctx, k_scope_chrome);
       }
-      if (rows_changed || event_mutated) {
+      if (showcase_redraw) {
+        stygian_scope_invalidate_next(ctx, k_scope_gutter);
+      }
+      if (rows_changed || event_mutated || showcase_redraw) {
         stygian_scope_invalidate_next(ctx, k_scope_rows);
       }
       if (!show_perf) {
         stygian_scope_invalidate_next(ctx, k_scope_perf);
       }
+      if (show_perf) {
+        stygian_scope_invalidate_next(ctx, k_scope_perf);
+        stygian_set_repaint_source(ctx, "showcase");
+        stygian_request_repaint_after_ms(ctx, 0u);
+      }
 
-      if (chrome_changed || rows_changed || event_mutated) {
-        stygian_set_repaint_source(ctx, "mutation");
+      if (chrome_changed || rows_changed || event_mutated || showcase_redraw) {
+        stygian_set_repaint_source(ctx,
+                                   showcase_redraw ? "showcase" : "mutation");
         stygian_request_repaint_after_ms(ctx, 0u);
       }
 

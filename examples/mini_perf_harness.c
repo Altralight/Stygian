@@ -3,10 +3,24 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 static double stygian_now_seconds(void) {
+#ifdef _WIN32
+  static LARGE_INTEGER freq = {0};
+  LARGE_INTEGER counter;
+  if (freq.QuadPart == 0) {
+    QueryPerformanceFrequency(&freq);
+  }
+  QueryPerformanceCounter(&counter);
+  return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
   struct timespec ts;
   timespec_get(&ts, TIME_UTC);
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#endif
 }
 
 void stygian_mini_perf_init(StygianMiniPerfHarness *perf, const char *name) {
@@ -16,20 +30,20 @@ void stygian_mini_perf_init(StygianMiniPerfHarness *perf, const char *name) {
   perf->name = name;
   perf->last_log_seconds = stygian_now_seconds();
   perf->widget.enabled = true;
-  perf->widget.show_graph = true;
-  perf->widget.show_input = true;
+  perf->widget.show_graph = false;
+  perf->widget.show_input = false;
   perf->widget.auto_scale_graph = false;
-  perf->widget.history_window = 120u;
+  perf->widget.history_window = 60u;
   perf->widget.idle_hz = 30u;
   perf->widget.active_hz = 30u;
   perf->widget.text_hz = 5u;
-  perf->widget.graph_max_segments = 64u;
+  perf->widget.graph_max_segments = 32u;
   perf->widget.max_stress_hz = 120u;
   perf->widget.stress_mode = false;
-  perf->widget.compact_mode = false;
-  perf->widget.show_memory = true;
-  perf->widget.show_glyphs = true;
-  perf->widget.show_triad = true;
+  perf->widget.compact_mode = true;
+  perf->widget.show_memory = false;
+  perf->widget.show_glyphs = false;
+  perf->widget.show_triad = false;
 }
 
 void stygian_mini_perf_accumulate(StygianMiniPerfHarness *perf, bool eval_only) {
@@ -47,8 +61,8 @@ void stygian_mini_perf_draw(StygianContext *ctx, StygianFont font,
   if (!ctx || !perf)
     return;
   if (!perf->pos_initialized) {
-    perf->widget.w = 360.0f;
-    perf->widget.h = 230.0f;
+    perf->widget.w = 320.0f;
+    perf->widget.h = 104.0f;
     perf->widget.x = (float)width - perf->widget.w - 12.0f;
     perf->widget.y = 44.0f;
     perf->pos_initialized = true;

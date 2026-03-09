@@ -1,0 +1,46 @@
+name: Linux
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  linux-build:
+    name: Linux Build Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang jq \
+            libx11-dev libgl-dev \
+            libwayland-dev libxkbcommon-dev \
+            zlib1g-dev libzstd-dev
+
+      - name: Build tier targets
+        run: |
+          chmod +x compile/run.sh compile/linux/build.sh
+          compile/run.sh --target tier1_safety
+          compile/run.sh --target tier2_runtime
+          compile/run.sh --target tier3_misuse
+          compile/run.sh --target calculator_mini
+
+      - name: Install xvfb and Mesa
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1-mesa-dri mesa-utils
+
+      - name: Run tier1 safety headless
+        run: |
+          command -v xvfb-run >/dev/null 2>&1 || exit 0
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
+            ./build/tier1_safety
+        continue-on-error: true

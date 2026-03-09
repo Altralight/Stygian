@@ -198,6 +198,10 @@ bool stygian_set_output_color_space(StygianContext *ctx,
                                     StygianColorSpace color_space);
 bool stygian_set_output_icc_profile(StygianContext *ctx, const char *icc_path,
                                     StygianICCInfo *out_info);
+bool stygian_set_output_icc_auto(StygianContext *ctx, bool enabled);
+bool stygian_get_output_icc_auto(const StygianContext *ctx);
+bool stygian_refresh_output_icc_from_monitor(StygianContext *ctx,
+                                             StygianICCInfo *out_info);
 bool stygian_get_output_color_profile(const StygianContext *ctx,
                                       StygianColorProfile *out_profile);
 bool stygian_set_glyph_source_color_space(StygianContext *ctx,
@@ -301,7 +305,7 @@ bool stygian_font_is_valid(const StygianContext *ctx, StygianFont font);
 void stygian_layer_begin(StygianContext *ctx);
 void stygian_layer_end(StygianContext *ctx);
 
-// Retained scope invalidation helpers (DDI).
+// Scope invalidation / replay helpers (DDI).
 void stygian_scope_begin(StygianContext *ctx, StygianScopeId id);
 void stygian_scope_end(StygianContext *ctx);
 void stygian_scope_invalidate(StygianContext *ctx, StygianScopeId id);
@@ -393,9 +397,15 @@ void stygian_font_destroy(StygianContext *ctx, StygianFont font);
 StygianElement stygian_text(StygianContext *ctx, StygianFont font,
                             const char *str, float x, float y, float size,
                             float r, float g, float b, float a);
+StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
+                                 const char *str, size_t len, float x, float y,
+                                 float size, float r, float g, float b,
+                                 float a);
 
 float stygian_text_width(StygianContext *ctx, StygianFont font, const char *str,
                          float size);
+float stygian_text_width_span(StygianContext *ctx, StygianFont font,
+                              const char *str, size_t len, float size);
 
 // ============================================================================
 // Convenience (Immediate-style, uses internal transient pool)
@@ -423,6 +433,8 @@ void stygian_image_uv(StygianContext *ctx, StygianTexture tex, float x, float y,
 
 void stygian_get_size(StygianContext *ctx, int *w, int *h);
 void stygian_set_vsync(StygianContext *ctx, bool enable);
+void stygian_set_present_enabled(StygianContext *ctx, bool enable);
+void stygian_set_gpu_timing_enabled(StygianContext *ctx, bool enable);
 
 // Metaball Groups
 StygianElement stygian_begin_metaball_group(StygianContext *ctx);

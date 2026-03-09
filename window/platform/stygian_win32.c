@@ -64,6 +64,7 @@ struct StygianWindow {
   bool gl_swap_interval_resync_pending;
   uint32_t gl_borderless_present_stall_count;
   StygianTitlebarBehavior titlebar_behavior;
+  bool rect_apply_in_progress;
   bool in_size_move;
   UINT_PTR live_tick_timer_id;
   uint32_t live_tick_hz;
@@ -71,6 +72,8 @@ struct StygianWindow {
   int nc_drag_hit;
   POINT nc_drag_start_cursor;
   RECT nc_drag_start_rect;
+  uintptr_t monitor_key_cached;
+  uint32_t display_change_serial;
 };
 
 static const UINT_PTR STYGIAN_WIN32_LIVE_TICK_TIMER_ID = 0x51A7u;
@@ -87,6 +90,9 @@ static void stygian_win32_trace_transition(StygianWindow *win,
                                            const char *transition);
 static void stygian_win32_trace_long_present(StygianWindow *win,
                                              double present_ms);
+static uintptr_t stygian_win32_monitor_key(HWND hwnd);
+static void stygian_win32_note_display_change(StygianWindow *win,
+                                              bool force);
 
 static void stygian_win32_start_live_ticks(StygianWindow *win, uint32_t hz) {
   UINT interval_ms;
@@ -330,13 +336,176 @@ static bool stygian_win32_get_fullscreen_state(HWND hwnd, RECT *out_rect) {
 }
 
 static void stygian_win32_apply_window_rect(HWND hwnd, const RECT *rect) {
+  LONG_PTR ex_style;
+  StygianWindow *win;
   if (!hwnd || !rect)
     return;
-  SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-  SetWindowPos(hwnd, NULL, rect->left, rect->top, rect->right - rect->left,
-               rect->bottom - rect->top,
-               SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+  win = (StygianWindow *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+  if (win)
+    win->rect_apply_in_progress = true;
+  ex_style = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+  if (ex_style & WS_EX_TOPMOST) {
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                     SWP_NOOWNERZORDER);
+  } else {
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                     SWP_NOOWNERZORDER);
+  }
+  // SetWindowPos was resizing but not moving on this borderless maximize path.
+  MoveWindow(hwnd, rect->left, rect->top, rect->right - rect->left,
+             rect->bottom - rect->top, TRUE);
+  if (win)
+    win->rect_apply_in_progress = false;
+}
+
+static uintptr_t stygian_win32_monitor_key(HWND hwnd) {
+  HMONITOR monitor;
+  if (!hwnd)
+    return 0u;
+  monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  return (uintptr_t)monitor;
+}
+
+static void stygian_win32_note_display_change(StygianWindow *win, bool force) {
+  uintptr_t key;
+  if (!win || !win->hwnd)
+    return;
+  key = stygian_win32_monitor_key(win->hwnd);
+  if (force || key == 0u || key != win->monitor_key_cached) {
+    if (key != 0u) {
+      win->monitor_key_cached = key;
+    }
+    win->display_change_serial++;
+  }
+}
+
+static void stygian_win32_request_gl_swap_resync(StygianWindow *win) {
+  if (!win)
+    return;
+  if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
+      win->gl_swap_control_supported) {
+    win->gl_swap_interval_resync_pending = true;
+  }
+}
+
+static void stygian_win32_reset_borderless_present_watch(StygianWindow *win) {
+  if (!win)
+    return;
+  win->gl_borderless_vsync_suspended = false;
+  win->gl_borderless_present_stall_count = 0u;
+  stygian_win32_request_gl_swap_resync(win);
+}
+
+static void stygian_win32_set_mode_flags(StygianWindow *win, bool fullscreen,
+                                         bool maximized,
+                                         bool borderless_manual_maximized) {
+  if (!win)
+    return;
+  win->fullscreen = fullscreen;
+  win->maximized = maximized;
+  win->minimized = false;
+  win->borderless_manual_maximized = borderless_manual_maximized;
+  stygian_win32_reset_borderless_present_watch(win);
+}
+
+static void stygian_win32_clear_special_modes_for_bounds(StygianWindow *win) {
+  if (!win)
+    return;
+  if (win->fullscreen) {
+    win->fullscreen = false;
+    win->fullscreen_restore_valid = false;
+  }
+  if (win->borderless_manual_maximized) {
+    win->borderless_manual_maximized = false;
+    win->maximized = false;
+    stygian_win32_reset_borderless_present_watch(win);
+  }
+}
+
+static bool stygian_win32_get_borderless_manual_target_rect(StygianWindow *win,
+                                                            RECT *out_rect) {
+  RECT work_rect;
+  RECT monitor_rect;
+  bool full_monitor;
+  if (!win || !win->hwnd || !out_rect ||
+      !(win->flags & STYGIAN_WINDOW_BORDERLESS)) {
+    return false;
+  }
+  if (!stygian_win32_get_monitor_work_rect(win->hwnd, &work_rect))
+    return false;
+  if ((win->flags & STYGIAN_WINDOW_OPENGL) &&
+      stygian_win32_get_monitor_rect(win->hwnd, &monitor_rect)) {
+    full_monitor = (work_rect.left == monitor_rect.left) &&
+                   (work_rect.top == monitor_rect.top) &&
+                   (work_rect.right == monitor_rect.right) &&
+                   (work_rect.bottom == monitor_rect.bottom);
+    if (full_monitor && (work_rect.bottom - work_rect.top) > 1) {
+      work_rect.bottom -= 1;
+    }
+  }
+  *out_rect = work_rect;
+  return true;
+}
+
+static void stygian_win32_refresh_borderless_manual_bounds(StygianWindow *win) {
+  RECT target_rect;
+  RECT current_rect;
+  if (!win || !win->hwnd || !win->borderless_manual_maximized ||
+      win->rect_apply_in_progress) {
+    return;
+  }
+  if (!stygian_win32_get_borderless_manual_target_rect(win, &target_rect))
+    return;
+  if (!GetWindowRect(win->hwnd, &current_rect))
+    return;
+  if (current_rect.left == target_rect.left &&
+      current_rect.top == target_rect.top &&
+      current_rect.right == target_rect.right &&
+      current_rect.bottom == target_rect.bottom) {
+    return;
+  }
+  // Win32 still likes to sneak in a resize-only max pass here sometimes.
+  stygian_win32_apply_window_rect(win->hwnd, &target_rect);
+}
+
+static void stygian_win32_apply_rect_mode(
+    StygianWindow *win, const RECT *rect, bool fullscreen, bool maximized,
+    bool borderless_manual_maximized) {
+  if (!win || !rect)
+    return;
+  stygian_win32_apply_window_rect(win->hwnd, rect);
+  stygian_win32_set_mode_flags(win, fullscreen, maximized,
+                               borderless_manual_maximized);
+}
+
+static bool stygian_win32_try_borderless_maximize(StygianWindow *win) {
+  RECT target_rect;
+  if (!win || !win->hwnd || !(win->flags & STYGIAN_WINDOW_BORDERLESS))
+    return false;
+  if (!win->borderless_manual_maximized &&
+      GetWindowRect(win->hwnd, &win->borderless_restore_rect)) {
+    win->borderless_restore_valid = true;
+  }
+  if (!stygian_win32_get_borderless_manual_target_rect(win, &target_rect))
+    return false;
+  stygian_win32_apply_rect_mode(win, &target_rect, false, true, true);
+  return true;
+}
+
+static bool stygian_win32_try_borderless_restore(StygianWindow *win) {
+  RECT restore_rect;
+  if (!win || !win->hwnd || !win->borderless_manual_maximized)
+    return false;
+  if (win->borderless_restore_valid) {
+    restore_rect = win->borderless_restore_rect;
+    stygian_win32_apply_window_rect(win->hwnd, &restore_rect);
+  } else {
+    ShowWindow(win->hwnd, SW_RESTORE);
+  }
+  stygian_win32_set_mode_flags(win, false, false, false);
+  return true;
 }
 
 // ============================================================================
@@ -490,6 +659,27 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp,
     e.resize.height = win->height;
     push_event(win, &e);
     return 0;
+
+  case WM_MOVE:
+    stygian_win32_note_display_change(win, false);
+    stygian_win32_refresh_borderless_manual_bounds(win);
+    return 0;
+
+  case WM_WINDOWPOSCHANGED:
+    stygian_win32_note_display_change(win, false);
+    stygian_win32_refresh_borderless_manual_bounds(win);
+    break;
+
+  case WM_DISPLAYCHANGE:
+    stygian_win32_note_display_change(win, true);
+    stygian_win32_refresh_borderless_manual_bounds(win);
+    e.type = STYGIAN_EVENT_TICK;
+    push_event(win, &e);
+    return 0;
+
+  case WM_DPICHANGED:
+    stygian_win32_note_display_change(win, true);
+    break;
 
   case WM_ENTERSIZEMOVE:
     return 0;
@@ -647,7 +837,8 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp,
     break;
 
   case WM_GETMINMAXINFO:
-    if ((win->flags & STYGIAN_WINDOW_BORDERLESS) && lp) {
+    if ((win->flags & STYGIAN_WINDOW_BORDERLESS) && lp &&
+        !win->rect_apply_in_progress) {
       MINMAXINFO *minmax_info = (MINMAXINFO *)lp;
       POINT max_pos = {0};
       POINT max_size = {0};
@@ -755,6 +946,8 @@ StygianWindow *stygian_window_create(const StygianWindowConfig *config) {
   }
 
   SetWindowLongPtr(win->hwnd, GWLP_USERDATA, (LONG_PTR)win);
+  win->monitor_key_cached = stygian_win32_monitor_key(win->hwnd);
+  win->display_change_serial = 1u;
 
   // Dark mode
   BOOL dark = TRUE;
@@ -808,6 +1001,8 @@ StygianWindow *stygian_window_from_native(void *native_handle) {
   win->hdc = GetDC(hwnd);
   win->external_owned = true; // Don't destroy window on cleanup
   win->focused = true;
+  win->monitor_key_cached = stygian_win32_monitor_key(hwnd);
+  win->display_change_serial = 1u;
 
   // Get current size
   RECT rc;
@@ -864,20 +1059,7 @@ void stygian_window_get_size(StygianWindow *win, int *w, int *h) {
 
 void stygian_window_set_size(StygianWindow *win, int w, int h) {
   if (win && win->hwnd) {
-    if (win->fullscreen) {
-      win->fullscreen = false;
-      win->fullscreen_restore_valid = false;
-    }
-    if (win->borderless_manual_maximized) {
-      win->borderless_manual_maximized = false;
-      win->maximized = false;
-      win->gl_borderless_vsync_suspended = false;
-      win->gl_borderless_present_stall_count = 0u;
-      if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-          win->gl_swap_control_supported) {
-        win->gl_swap_interval_resync_pending = true;
-      }
-    }
+    stygian_win32_clear_special_modes_for_bounds(win);
     SetWindowPos(win->hwnd, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
   }
 }
@@ -895,20 +1077,7 @@ void stygian_window_get_position(StygianWindow *win, int *x, int *y) {
 
 void stygian_window_set_position(StygianWindow *win, int x, int y) {
   if (win && win->hwnd) {
-    if (win->fullscreen) {
-      win->fullscreen = false;
-      win->fullscreen_restore_valid = false;
-    }
-    if (win->borderless_manual_maximized) {
-      win->borderless_manual_maximized = false;
-      win->maximized = false;
-      win->gl_borderless_vsync_suspended = false;
-      win->gl_borderless_present_stall_count = 0u;
-      if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-          win->gl_swap_control_supported) {
-        win->gl_swap_interval_resync_pending = true;
-      }
-    }
+    stygian_win32_clear_special_modes_for_bounds(win);
     SetWindowPos(win->hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
   }
 }
@@ -935,38 +1104,8 @@ void stygian_window_maximize(StygianWindow *win) {
     stygian_window_set_fullscreen(win, false);
   }
   stygian_win32_trace_transition(win, "maximize-request");
-  if (win->flags & STYGIAN_WINDOW_BORDERLESS) {
-    RECT work_rect;
-    RECT monitor_rect;
-    if (!win->borderless_manual_maximized &&
-        GetWindowRect(win->hwnd, &win->borderless_restore_rect)) {
-      win->borderless_restore_valid = true;
-    }
-    if (stygian_win32_get_monitor_work_rect(win->hwnd, &work_rect)) {
-      if ((win->flags & STYGIAN_WINDOW_OPENGL) &&
-          stygian_win32_get_monitor_rect(win->hwnd, &monitor_rect)) {
-        bool full_monitor =
-            (work_rect.left == monitor_rect.left) &&
-            (work_rect.top == monitor_rect.top) &&
-            (work_rect.right == monitor_rect.right) &&
-            (work_rect.bottom == monitor_rect.bottom);
-        if (full_monitor && (work_rect.bottom - work_rect.top) > 1) {
-          work_rect.bottom -= 1;
-        }
-      }
-      stygian_win32_apply_window_rect(win->hwnd, &work_rect);
-      win->borderless_manual_maximized = true;
-      win->maximized = true;
-      win->minimized = false;
-      win->gl_borderless_present_stall_count = 0u;
-      if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-          win->gl_swap_control_supported) {
-        win->gl_borderless_vsync_suspended = false;
-        win->gl_swap_interval_resync_pending = true;
-      }
-      return;
-    }
-  }
+  if (stygian_win32_try_borderless_maximize(win))
+    return;
   ShowWindow(win->hwnd, SW_MAXIMIZE);
 }
 
@@ -978,24 +1117,8 @@ void stygian_window_restore(StygianWindow *win) {
     return;
   }
   stygian_win32_trace_transition(win, "restore-request");
-  if (win->borderless_manual_maximized) {
-    if (win->borderless_restore_valid) {
-      RECT restore_rect = win->borderless_restore_rect;
-      stygian_win32_apply_window_rect(win->hwnd, &restore_rect);
-    } else {
-      ShowWindow(win->hwnd, SW_RESTORE);
-    }
-    win->borderless_manual_maximized = false;
-    win->maximized = false;
-    win->minimized = false;
-    win->gl_borderless_vsync_suspended = false;
-    win->gl_borderless_present_stall_count = 0u;
-    if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-        win->gl_swap_control_supported) {
-      win->gl_swap_interval_resync_pending = true;
-    }
+  if (stygian_win32_try_borderless_restore(win))
     return;
-  }
   ShowWindow(win->hwnd, SW_RESTORE);
 }
 
@@ -1021,17 +1144,7 @@ void stygian_window_set_fullscreen(StygianWindow *win, bool enabled) {
     }
     if (!stygian_win32_get_fullscreen_state(win->hwnd, &target_rect))
       return;
-    stygian_win32_apply_window_rect(win->hwnd, &target_rect);
-    win->fullscreen = true;
-    win->maximized = false;
-    win->minimized = false;
-    win->borderless_manual_maximized = false;
-    win->gl_borderless_vsync_suspended = false;
-    win->gl_borderless_present_stall_count = 0u;
-    if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-        win->gl_swap_control_supported) {
-      win->gl_swap_interval_resync_pending = true;
-    }
+    stygian_win32_apply_rect_mode(win, &target_rect, true, false, false);
     return;
   }
 
@@ -1039,15 +1152,7 @@ void stygian_window_set_fullscreen(StygianWindow *win, bool enabled) {
     target_rect = win->fullscreen_restore_rect;
     stygian_win32_apply_window_rect(win->hwnd, &target_rect);
   }
-  win->fullscreen = false;
-  win->maximized = false;
-  win->minimized = false;
-  win->gl_borderless_vsync_suspended = false;
-  win->gl_borderless_present_stall_count = 0u;
-  if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-      win->gl_swap_control_supported) {
-    win->gl_swap_interval_resync_pending = true;
-  }
+  stygian_win32_set_mode_flags(win, false, false, false);
 }
 
 bool stygian_window_is_fullscreen(StygianWindow *win) {
@@ -1236,17 +1341,7 @@ bool stygian_window_apply_titlebar_menu_action(StygianWindow *win,
     return false;
   }
 
-  stygian_win32_apply_window_rect(win->hwnd, &target_rect);
-  win->fullscreen = false;
-  win->borderless_manual_maximized = false;
-  win->maximized = false;
-  win->minimized = false;
-  win->gl_borderless_vsync_suspended = false;
-  win->gl_borderless_present_stall_count = 0u;
-  if ((win->flags & STYGIAN_WINDOW_OPENGL) && win->gl_vsync_requested &&
-      win->gl_swap_control_supported) {
-    win->gl_swap_interval_resync_pending = true;
-  }
+  stygian_win32_apply_rect_mode(win, &target_rect, false, false, false);
   return true;
 }
 
@@ -1257,6 +1352,10 @@ void stygian_window_focus(StygianWindow *win) {
 
 bool stygian_window_is_focused(StygianWindow *win) {
   return win ? win->focused : false;
+}
+
+uint32_t stygian_window_get_display_change_serial(StygianWindow *win) {
+  return win ? win->display_change_serial : 0u;
 }
 
 // ============================================================================

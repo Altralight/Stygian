@@ -11,6 +11,9 @@
 #include <windows.h>
 
 #define mkdir(dir, mode) _mkdir(dir)
+#define stygian_strdup _strdup
+#else
+#define stygian_strdup strdup
 #endif
 
 // Max history items to keep in memory (simple ring buffer)
@@ -37,6 +40,16 @@ static void ensure_directory(const char *path) {
   }
 }
 
+static char *stygian_clipboard_history_latest_dup(void) {
+  int latest;
+  if (g_clipboard.count <= 0)
+    return NULL;
+  latest = (g_clipboard.head - 1 + MAX_HISTORY) % MAX_HISTORY;
+  if (!g_clipboard.history[latest])
+    return NULL;
+  return stygian_strdup(g_clipboard.history[latest]);
+}
+
 void stygian_clipboard_push(StygianContext *ctx, const char *text,
                             const char *metadata) {
   if (!text)
@@ -44,16 +57,20 @@ void stygian_clipboard_push(StygianContext *ctx, const char *text,
 
   // 1. Write to OS Clipboard (Sync)
   StygianWindow *win = stygian_get_window(ctx);
+#ifdef _WIN32
   if (win) {
     stygian_clipboard_write(win, text);
   }
+#else
+  (void)win;
+#endif
 
   // 2. Write to Memory History
   int slot = g_clipboard.head;
   if (g_clipboard.history[slot]) {
     free(g_clipboard.history[slot]);
   }
-  g_clipboard.history[slot] = _strdup(text);
+  g_clipboard.history[slot] = stygian_strdup(text);
   g_clipboard.head = (g_clipboard.head + 1) % MAX_HISTORY;
   if (g_clipboard.count < MAX_HISTORY)
     g_clipboard.count++;
@@ -94,10 +111,14 @@ void stygian_clipboard_push(StygianContext *ctx, const char *text,
 char *stygian_clipboard_pop(StygianContext *ctx) {
   // Read from OS first (source of truth for external pastes)
   StygianWindow *win = stygian_get_window(ctx);
+#ifdef _WIN32
   if (win) {
     return stygian_clipboard_read(win);
   }
-  return NULL;
+#else
+  (void)win;
+#endif
+  return stygian_clipboard_history_latest_dup();
 }
 
 int stygian_clipboard_history_count(StygianContext *ctx) {

@@ -9,6 +9,8 @@
     ],
     "sources": [
       "examples/mini_perf_harness.c",
+      "editor/stygian_editor.c",
+      "editor/stygian_editor_module.c",
       "widgets/stygian_widgets.c",
       "src/stygian.c",
       "src/stygian_memory.c",
@@ -19,6 +21,7 @@
       "src/stygian_mtsdf.c",
       "src/stygian_clipboard.c",
       "layout/stygian_layout.c",
+      "layout/stygian_dock_impl.c",
       "layout/stygian_tabs.c"
     ],
     "gl_backend_source": "backends/stygian_ap_gl.c",
@@ -54,6 +57,11 @@
       "entry_source": "examples/perf_pathological_suite.c",
       "output_stem": "perf_pathological_suite"
     },
+    "node_graph_demo": {
+      "backend": "gl",
+      "entry_source": "examples/node_graph_demo.c",
+      "output_stem": "node_graph_demo"
+    },
     "quickwindow": {
       "backend": "gl",
       "entry_source": "examples/quickwindow.c",
@@ -78,6 +86,26 @@
       "backend": "vk",
       "entry_source": "examples/quickwindow_custom_titlebar.c",
       "output_stem": "quickwindow_custom_titlebar_vk"
+    },
+    "quickwindow_capture_smoke": {
+      "backend": "gl",
+      "entry_source": "examples/quickwindow_capture_smoke.c",
+      "output_stem": "quickwindow_capture_smoke"
+    },
+    "quickwindow_capture_smoke_vk": {
+      "backend": "vk",
+      "entry_source": "examples/quickwindow_capture_smoke.c",
+      "output_stem": "quickwindow_capture_smoke_vk"
+    },
+    "stygian_editor_bootstrap": {
+      "backend": "gl",
+      "entry_source": "examples/stygian_editor_bootstrap.c",
+      "output_stem": "stygian_editor_bootstrap"
+    },
+    "stygian_editor_bootstrap_vk": {
+      "backend": "vk",
+      "entry_source": "examples/stygian_editor_bootstrap.c",
+      "output_stem": "stygian_editor_bootstrap_vk"
     },
     "tier1_safety": {
       "backend": "gl",

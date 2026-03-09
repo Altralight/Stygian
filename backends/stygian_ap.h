@@ -139,11 +139,49 @@ void stygian_ap_end_frame(StygianAP *ap);
 // Swap buffers (present)
 void stygian_ap_swap(StygianAP *ap);
 
+// Toggle backend present behavior. GL uses this to route raw benchmarks
+// offscreen so the window system stays out of the numbers.
+void stygian_ap_set_present_enabled(StygianAP *ap, bool enable);
+
 // Make this AP's context current (restores main window context)
 void stygian_ap_make_current(StygianAP *ap);
 
 // Set viewport (useful after restoring context)
 void stygian_ap_set_viewport(StygianAP *ap, int width, int height);
+
+// ============================================================================
+// Capture Readback (optional, backend-dependent)
+// ============================================================================
+
+typedef enum StygianAPCaptureFormat {
+  STYGIAN_AP_CAPTURE_FORMAT_RGBA8 = 0,
+} StygianAPCaptureFormat;
+
+typedef struct StygianAPCaptureFrameInfo {
+  int width;
+  int height;
+  uint32_t stride_bytes;
+  uint64_t frame_index;
+  StygianAPCaptureFormat format;
+} StygianAPCaptureFrameInfo;
+
+// Returns true if backend exposes capture readback support.
+bool stygian_ap_capture_is_supported(const StygianAP *ap);
+
+// Start/stop capture session. Safe no-op when unsupported.
+bool stygian_ap_capture_begin(StygianAP *ap);
+void stygian_ap_capture_end(StygianAP *ap);
+
+// Queue/poll frame readback into caller-provided RGBA8 buffer.
+bool stygian_ap_capture_request_readback(StygianAP *ap);
+bool stygian_ap_capture_poll_readback(StygianAP *ap, uint8_t *dst_rgba,
+                                      uint32_t dst_bytes,
+                                      StygianAPCaptureFrameInfo *out_info);
+
+// One-shot synchronous snapshot (RGBA8). Returns false if unsupported.
+bool stygian_ap_capture_snapshot(StygianAP *ap, uint8_t *dst_rgba,
+                                 uint32_t dst_bytes,
+                                 StygianAPCaptureFrameInfo *out_info);
 
 // ============================================================================
 // Textures (GPU memory owned by AP)

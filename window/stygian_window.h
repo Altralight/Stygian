@@ -138,6 +138,7 @@ bool stygian_window_is_fullscreen(StygianWindow *win);
 
 void stygian_window_focus(StygianWindow *win);
 bool stygian_window_is_focused(StygianWindow *win);
+uint32_t stygian_window_get_display_change_serial(StygianWindow *win);
 
 void stygian_window_get_titlebar_hints(StygianWindow *win,
                                        StygianTitlebarHints *out_hints);

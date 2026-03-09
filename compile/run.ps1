@@ -3,7 +3,8 @@ param(
   [string]$Group,
   [string]$Clang = "",
   [string]$VulkanSdk = "",
-  [switch]$NoShaderCheck
+  [switch]$NoShaderCheck,
+  [switch]$EnableCapture
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +35,9 @@ if ($VulkanSdk) {
 }
 if ($NoShaderCheck) {
   $args += "-NoShaderCheck"
+}
+if ($EnableCapture) {
+  $args += "-EnableCapture"
 }
 
 if (-not $Target -and -not $Group) {

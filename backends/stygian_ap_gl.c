@@ -12,7 +12,17 @@
 #define GL_TEXTURE1 0x84C1
 #endif
 
+#ifdef __APPLE__
+#include <OpenGL/gl3.h>
+#include <OpenGL/gl3ext.h>
+#include <strings.h>
+#elif defined(_WIN32)
 #include <GL/gl.h>
+#else
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <strings.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,14 +36,22 @@
 // OpenGL Types & Constants
 // ============================================================================
 
+#ifdef _WIN32
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
 typedef int GLint;
 typedef int GLsizei;
 typedef ptrdiff_t GLsizeiptr;
+typedef ptrdiff_t GLintptr;
 typedef char GLchar;
 typedef unsigned char GLboolean;
 typedef float GLfloat;
+typedef unsigned int GLbitfield;
+typedef unsigned long long GLuint64;
+#ifndef __GLsync
+typedef struct __GLsync *GLsync;
+#endif
+#endif
 
 // Use ifndef guards to avoid conflicts with system gl.h
 #ifndef GL_FALSE
@@ -51,11 +69,26 @@ typedef float GLfloat;
 #ifndef GL_ARRAY_BUFFER
 #define GL_ARRAY_BUFFER 0x8892
 #endif
+#ifndef GL_PIXEL_PACK_BUFFER
+#define GL_PIXEL_PACK_BUFFER 0x88EB
+#endif
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER 0x8D40
+#endif
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#endif
+#ifndef GL_FRAMEBUFFER_COMPLETE
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#endif
 #ifndef GL_SHADER_STORAGE_BUFFER
 #define GL_SHADER_STORAGE_BUFFER 0x90D2
 #endif
 #ifndef GL_STATIC_DRAW
 #define GL_STATIC_DRAW 0x88E4
+#endif
+#ifndef GL_STREAM_READ
+#define GL_STREAM_READ 0x88E1
 #endif
 #ifndef GL_DYNAMIC_DRAW
 #define GL_DYNAMIC_DRAW 0x88E8
@@ -117,11 +150,34 @@ typedef float GLfloat;
 #ifndef GL_QUERY_RESULT_AVAILABLE
 #define GL_QUERY_RESULT_AVAILABLE 0x8867
 #endif
+#ifndef GL_MAP_READ_BIT
+#define GL_MAP_READ_BIT 0x0001
+#endif
+#ifndef GL_SYNC_GPU_COMMANDS_COMPLETE
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#endif
+#ifndef GL_ALREADY_SIGNALED
+#define GL_ALREADY_SIGNALED 0x911A
+#endif
+#ifndef GL_TIMEOUT_EXPIRED
+#define GL_TIMEOUT_EXPIRED 0x911B
+#endif
+#ifndef GL_CONDITION_SATISFIED
+#define GL_CONDITION_SATISFIED 0x911C
+#endif
+#ifndef GL_WAIT_FAILED
+#define GL_WAIT_FAILED 0x911D
+#endif
 
 // ============================================================================
 // OpenGL Function Pointers
 // ============================================================================
 
+typedef void (*StygianPFNGLDrawArraysInstancedBaseInstanceProc)(
+    GLenum, GLint, GLsizei, GLsizei, GLuint);
+typedef void (*StygianPFNGLActiveTextureProc)(GLenum);
+
+#ifdef _WIN32
 typedef void (*PFNGLGENBUFFERSPROC)(GLsizei, GLuint *);
 typedef void (*PFNGLBINDBUFFERPROC)(GLenum, GLuint);
 typedef void (*PFNGLBUFFERDATAPROC)(GLenum, GLsizeiptr, const void *, GLenum);
@@ -156,9 +212,68 @@ typedef void (*PFNGLBINDVERTEXARRAYPROC)(GLuint);
 typedef void (*PFNGLDRAWARRAYSINSTANCEDPROC)(GLenum, GLint, GLsizei, GLsizei);
 typedef void (*PFNGLDRAWARRAYSINSTANCEDBASEINSTANCEPROC)(GLenum, GLint, GLsizei,
                                                          GLsizei, GLuint);
+typedef void (*PFNGLGENFRAMEBUFFERSPROC)(GLsizei, GLuint *);
+typedef void (*PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei, const GLuint *);
+typedef void (*PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);
+typedef GLenum (*PFNGLCHECKFRAMEBUFFERSTATUSPROC)(GLenum);
+typedef void (*PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum, GLenum, GLenum, GLuint,
+                                              GLint);
 typedef void (*PFNGLDELETEBUFFERSPROC)(GLsizei, const GLuint *);
 typedef void (*PFNGLDELETEPROGRAMPROC)(GLuint);
 typedef void (*PFNGLACTIVETEXTUREPROC)(GLenum);
+#endif
+
+#if !defined(_WIN32)
+#define glGenBuffers stygian_glGenBuffers
+#define glBindBuffer stygian_glBindBuffer
+#define glBufferData stygian_glBufferData
+#define glBufferSubData stygian_glBufferSubData
+#define glBindBufferBase stygian_glBindBufferBase
+#define glCreateShader stygian_glCreateShader
+#define glShaderSource stygian_glShaderSource
+#define glCompileShader stygian_glCompileShader
+#define glGetShaderiv stygian_glGetShaderiv
+#define glGetShaderInfoLog stygian_glGetShaderInfoLog
+#define glCreateProgram stygian_glCreateProgram
+#define glAttachShader stygian_glAttachShader
+#define glLinkProgram stygian_glLinkProgram
+#define glUseProgram stygian_glUseProgram
+#define glGetProgramiv stygian_glGetProgramiv
+#define glGetProgramInfoLog stygian_glGetProgramInfoLog
+#define glGetUniformLocation stygian_glGetUniformLocation
+#define glUniform1i stygian_glUniform1i
+#define glUniform1iv stygian_glUniform1iv
+#define glUniform1f stygian_glUniform1f
+#define glUniform2f stygian_glUniform2f
+#define glUniformMatrix3fv stygian_glUniformMatrix3fv
+#define glEnableVertexAttribArray stygian_glEnableVertexAttribArray
+#define glVertexAttribPointer stygian_glVertexAttribPointer
+#define glGenVertexArrays stygian_glGenVertexArrays
+#define glBindVertexArray stygian_glBindVertexArray
+#define glDrawArraysInstanced stygian_glDrawArraysInstanced
+#define glDrawArraysInstancedBaseInstance stygian_glDrawArraysInstancedBaseInstance
+#define glGenFramebuffers stygian_glGenFramebuffers
+#define glDeleteFramebuffers stygian_glDeleteFramebuffers
+#define glBindFramebuffer stygian_glBindFramebuffer
+#define glCheckFramebufferStatus stygian_glCheckFramebufferStatus
+#define glFramebufferTexture2D stygian_glFramebufferTexture2D
+#define glDeleteBuffers stygian_glDeleteBuffers
+#define glDeleteProgram stygian_glDeleteProgram
+#define glActiveTexture stygian_glActiveTexture
+#define glDeleteShader stygian_glDeleteShader
+#define glValidateProgram stygian_glValidateProgram
+#define glGenQueries stygian_glGenQueries
+#define glDeleteQueries stygian_glDeleteQueries
+#define glBeginQuery stygian_glBeginQuery
+#define glEndQuery stygian_glEndQuery
+#define glGetQueryObjectiv stygian_glGetQueryObjectiv
+#define glGetQueryObjectui64v stygian_glGetQueryObjectui64v
+#define glFenceSync stygian_glFenceSync
+#define glDeleteSync stygian_glDeleteSync
+#define glClientWaitSync stygian_glClientWaitSync
+#define glMapBufferRange stygian_glMapBufferRange
+#define glUnmapBuffer stygian_glUnmapBuffer
+#endif
 
 static PFNGLGENBUFFERSPROC glGenBuffers;
 static PFNGLBINDBUFFERPROC glBindBuffer;
@@ -187,29 +302,47 @@ static PFNGLVERTEXATTRIBPOINTERPROC glVertexAttribPointer;
 static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
 static PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
 static PFNGLDRAWARRAYSINSTANCEDPROC glDrawArraysInstanced;
-static PFNGLDRAWARRAYSINSTANCEDBASEINSTANCEPROC
+static StygianPFNGLDrawArraysInstancedBaseInstanceProc
     glDrawArraysInstancedBaseInstance;
+static PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers;
+static PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
+static PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer;
+static PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus;
+static PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D;
 static PFNGLDELETEBUFFERSPROC glDeleteBuffers;
 static PFNGLDELETEPROGRAMPROC glDeleteProgram;
-static PFNGLACTIVETEXTUREPROC glActiveTexture;
+static StygianPFNGLActiveTextureProc glActiveTexture;
 
 // Shader cleanup and validation
+#ifdef _WIN32
 typedef void (*PFNGLDELETESHADERPROC)(GLuint);
 typedef void (*PFNGLVALIDATEPROGRAMPROC)(GLuint);
-static PFNGLDELETESHADERPROC glDeleteShader;
-static PFNGLVALIDATEPROGRAMPROC glValidateProgram;
 typedef void (*PFNGLGENQUERIESPROC)(GLsizei, GLuint *);
 typedef void (*PFNGLDELETEQUERIESPROC)(GLsizei, const GLuint *);
 typedef void (*PFNGLBEGINQUERYPROC)(GLenum, GLuint);
 typedef void (*PFNGLENDQUERYPROC)(GLenum);
 typedef void (*PFNGLGETQUERYOBJECTIVPROC)(GLuint, GLenum, GLint *);
 typedef void (*PFNGLGETQUERYOBJECTUI64VPROC)(GLuint, GLenum, uint64_t *);
+typedef GLsync (*PFNGLFENCESYNCPROC)(GLenum, GLbitfield);
+typedef void (*PFNGLDELETESYNCPROC)(GLsync);
+typedef GLenum (*PFNGLCLIENTWAITSYNCPROC)(GLsync, GLbitfield, GLuint64);
+typedef void *(*PFNGLMAPBUFFERRANGEPROC)(GLenum, GLintptr, GLsizeiptr,
+                                         GLbitfield);
+typedef GLboolean (*PFNGLUNMAPBUFFERPROC)(GLenum);
+#endif
+static PFNGLDELETESHADERPROC glDeleteShader;
+static PFNGLVALIDATEPROGRAMPROC glValidateProgram;
 static PFNGLGENQUERIESPROC glGenQueries;
 static PFNGLDELETEQUERIESPROC glDeleteQueries;
 static PFNGLBEGINQUERYPROC glBeginQuery;
 static PFNGLENDQUERYPROC glEndQuery;
 static PFNGLGETQUERYOBJECTIVPROC glGetQueryObjectiv;
 static PFNGLGETQUERYOBJECTUI64VPROC glGetQueryObjectui64v;
+static PFNGLFENCESYNCPROC glFenceSync;
+static PFNGLDELETESYNCPROC glDeleteSync;
+static PFNGLCLIENTWAITSYNCPROC glClientWaitSync;
+static PFNGLMAPBUFFERRANGEPROC glMapBufferRange;
+static PFNGLUNMAPBUFFERPROC glUnmapBuffer;
 
 static void load_gl(void **ptr, const char *name) {
   *ptr = stygian_window_gl_get_proc_address(name);
@@ -245,11 +378,19 @@ struct StygianAP {
   GLint loc_output_src_gamma;
   GLint loc_output_dst_srgb;
   GLint loc_output_dst_gamma;
+  int cached_screen_w;
+  int cached_screen_h;
+  GLuint current_program;
+  GLuint current_vao;
+  bool sampler_uniforms_dirty;
+  bool output_uniforms_dirty;
+  GLuint bound_image_textures[16];
 
   // State
   uint32_t element_count;
   bool initialized;
   StygianAPAdapterClass adapter_class;
+  bool present_enabled;
   bool output_color_transform_enabled;
   float output_color_matrix[9];
   bool output_src_srgb_transfer;
@@ -266,11 +407,18 @@ struct StygianAP {
   uint32_t last_upload_bytes;
   uint32_t last_upload_ranges;
   float last_gpu_ms;
-  GLuint gpu_queries[2];
+  GLuint gpu_queries[8];
   uint8_t gpu_query_index;
   bool gpu_query_initialized;
   bool gpu_query_in_flight;
-  bool gpu_query_pending[2];
+  bool gpu_query_pending[8];
+
+  // Raw/no-present frames draw here so window-system pacing stays out.
+  bool raw_target_supported;
+  GLuint raw_fbo;
+  GLuint raw_color_tex;
+  int raw_target_width;
+  int raw_target_height;
 
   // SoA SSBOs (3 buffers: hot, appearance, effects)
   GLuint soa_ssbo_hot;
@@ -284,10 +432,27 @@ struct StygianAP {
 
   // Remapped hot stream submitted to GPU (texture handles -> sampler slots).
   StygianSoAHot *submit_hot;
+
+  // Capture readback ring (PBO)
+  bool capture_supported;
+  bool capture_active;
+  int capture_width;
+  int capture_height;
+  uint32_t capture_stride_bytes;
+  uint32_t capture_frame_bytes;
+  GLuint capture_pbos[4];
+  GLsync capture_fences[4];
+  bool capture_in_flight[4];
+  uint64_t capture_slot_frame_index[4];
+  uint8_t capture_write_slot;
+  uint8_t capture_read_slot;
+  uint64_t capture_frame_counter;
 };
 
 #define STYGIAN_GL_IMAGE_SAMPLERS 16
 #define STYGIAN_GL_IMAGE_UNIT_BASE 2 // units 0,1 reserved for font atlas etc.
+#define STYGIAN_GL_CAPTURE_PBO_SLOTS 4
+#define STYGIAN_GL_GPU_QUERY_SLOTS 8
 
 // Safe string copy: deterministic, no printf overhead, always NUL-terminates.
 // copy_cstr removed — use stygian_cpystr from stygian_internal.h
@@ -323,6 +488,166 @@ static void cfg_free(StygianAllocator *allocator, void *ptr) {
     allocator->free(allocator, ptr);
   else
     free(ptr);
+}
+
+static void stygian_ap_raw_target_reset(StygianAP *ap) {
+  if (!ap)
+    return;
+  ap->raw_fbo = 0u;
+  ap->raw_color_tex = 0u;
+  ap->raw_target_width = 0;
+  ap->raw_target_height = 0;
+}
+
+static void stygian_ap_raw_target_release(StygianAP *ap) {
+  if (!ap)
+    return;
+  if (ap->raw_fbo && glDeleteFramebuffers) {
+    glDeleteFramebuffers(1, &ap->raw_fbo);
+    ap->raw_fbo = 0u;
+  }
+  if (ap->raw_color_tex) {
+    glDeleteTextures(1, &ap->raw_color_tex);
+    ap->raw_color_tex = 0u;
+  }
+  ap->raw_target_width = 0;
+  ap->raw_target_height = 0;
+}
+
+static bool stygian_ap_raw_target_configure(StygianAP *ap, int width,
+                                            int height) {
+  GLenum status = 0u;
+  if (!ap || !ap->raw_target_supported || width <= 0 || height <= 0)
+    return false;
+  if (ap->raw_fbo && ap->raw_color_tex && ap->raw_target_width == width &&
+      ap->raw_target_height == height) {
+    return true;
+  }
+
+  stygian_ap_raw_target_release(ap);
+
+  glGenFramebuffers(1, &ap->raw_fbo);
+  glGenTextures(1, &ap->raw_color_tex);
+  if (!ap->raw_fbo || !ap->raw_color_tex) {
+    stygian_ap_raw_target_release(ap);
+    return false;
+  }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, ap->raw_fbo);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, ap->raw_color_tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
+               GL_UNSIGNED_BYTE, NULL);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                         ap->raw_color_tex, 0);
+  status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  if (status != GL_FRAMEBUFFER_COMPLETE) {
+    // don't keep a half-baked target around; the default framebuffer is safer
+    stygian_ap_raw_target_release(ap);
+    return false;
+  }
+
+  ap->raw_target_width = width;
+  ap->raw_target_height = height;
+  return true;
+}
+
+static void stygian_ap_bind_render_target(StygianAP *ap, int width,
+                                          int height) {
+  if (!ap || !glBindFramebuffer)
+    return;
+  if (!ap->present_enabled && ap->raw_target_supported &&
+      stygian_ap_raw_target_configure(ap, width, height)) {
+    glBindFramebuffer(GL_FRAMEBUFFER, ap->raw_fbo);
+    return;
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static void stygian_ap_capture_reset_state(StygianAP *ap) {
+  if (!ap)
+    return;
+  ap->capture_width = 0;
+  ap->capture_height = 0;
+  ap->capture_stride_bytes = 0u;
+  ap->capture_frame_bytes = 0u;
+  ap->capture_write_slot = 0u;
+  ap->capture_read_slot = 0u;
+  ap->capture_frame_counter = 0u;
+  for (uint32_t i = 0; i < STYGIAN_GL_CAPTURE_PBO_SLOTS; ++i) {
+    ap->capture_pbos[i] = 0u;
+    ap->capture_fences[i] = NULL;
+    ap->capture_in_flight[i] = false;
+    ap->capture_slot_frame_index[i] = 0u;
+  }
+}
+
+static void stygian_ap_capture_release(StygianAP *ap) {
+  if (!ap)
+    return;
+  for (uint32_t i = 0; i < STYGIAN_GL_CAPTURE_PBO_SLOTS; ++i) {
+    if (ap->capture_fences[i] && glDeleteSync) {
+      glDeleteSync(ap->capture_fences[i]);
+      ap->capture_fences[i] = NULL;
+    }
+    ap->capture_in_flight[i] = false;
+    ap->capture_slot_frame_index[i] = 0u;
+  }
+  if (glDeleteBuffers) {
+    for (uint32_t i = 0; i < STYGIAN_GL_CAPTURE_PBO_SLOTS; ++i) {
+      if (ap->capture_pbos[i]) {
+        glDeleteBuffers(1, &ap->capture_pbos[i]);
+        ap->capture_pbos[i] = 0u;
+      }
+    }
+  }
+  ap->capture_active = false;
+  ap->capture_width = 0;
+  ap->capture_height = 0;
+  ap->capture_stride_bytes = 0u;
+  ap->capture_frame_bytes = 0u;
+  ap->capture_write_slot = 0u;
+  ap->capture_read_slot = 0u;
+}
+
+static bool stygian_ap_capture_configure(StygianAP *ap, int width, int height) {
+  if (!ap || width <= 0 || height <= 0 || !glGenBuffers || !glBindBuffer ||
+      !glBufferData)
+    return false;
+
+  uint32_t stride = (uint32_t)width * 4u;
+  uint32_t bytes = stride * (uint32_t)height;
+  if (bytes == 0u)
+    return false;
+
+  stygian_ap_capture_release(ap);
+  glGenBuffers(STYGIAN_GL_CAPTURE_PBO_SLOTS, ap->capture_pbos);
+  for (uint32_t i = 0; i < STYGIAN_GL_CAPTURE_PBO_SLOTS; ++i) {
+    if (!ap->capture_pbos[i]) {
+      stygian_ap_capture_release(ap);
+      return false;
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, ap->capture_pbos[i]);
+    glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)bytes, NULL, GL_STREAM_READ);
+    ap->capture_in_flight[i] = false;
+    ap->capture_slot_frame_index[i] = 0u;
+    ap->capture_fences[i] = NULL;
+  }
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+  ap->capture_width = width;
+  ap->capture_height = height;
+  ap->capture_stride_bytes = stride;
+  ap->capture_frame_bytes = bytes;
+  ap->capture_write_slot = 0u;
+  ap->capture_read_slot = 0u;
+  ap->capture_frame_counter = 0u;
+  return true;
 }
 
 static bool contains_nocase(const char *haystack, const char *needle) {
@@ -572,6 +897,11 @@ static bool create_program(StygianAP *ap) {
     return false;
 
   ap->program = program;
+  ap->current_program = 0u;
+  ap->cached_screen_w = -1;
+  ap->cached_screen_h = -1;
+  ap->sampler_uniforms_dirty = true;
+  ap->output_uniforms_dirty = true;
   ap->shader_load_time = get_shader_newest_mod_time(ap->shader_dir);
   printf("[Stygian AP] Shaders loaded from: %s\n", ap->shader_dir);
   return true;
@@ -602,6 +932,82 @@ static void upload_output_color_transform_uniforms(StygianAP *ap) {
   }
 }
 
+static void stygian_ap_bind_program_if_needed(StygianAP *ap) {
+  if (!ap || !ap->program)
+    return;
+  if (ap->current_program == ap->program)
+    return;
+  glUseProgram(ap->program);
+  ap->current_program = ap->program;
+}
+
+static void stygian_ap_bind_vao_if_needed(StygianAP *ap) {
+  if (!ap)
+    return;
+  if (ap->current_vao == ap->vao)
+    return;
+  glBindVertexArray(ap->vao);
+  ap->current_vao = ap->vao;
+}
+
+static void stygian_ap_sync_common_uniforms(StygianAP *ap, int logical_w,
+                                            int logical_h) {
+  if (!ap)
+    return;
+
+  stygian_ap_bind_program_if_needed(ap);
+
+  if (ap->cached_screen_w != logical_w || ap->cached_screen_h != logical_h) {
+    glUniform2f(ap->loc_screen_size, (float)logical_w, (float)logical_h);
+    ap->cached_screen_w = logical_w;
+    ap->cached_screen_h = logical_h;
+  }
+
+  if (ap->sampler_uniforms_dirty) {
+    if (ap->loc_font_tex >= 0)
+      glUniform1i(ap->loc_font_tex, 1);
+    if (ap->loc_image_tex >= 0 && glUniform1iv) {
+      GLint units[STYGIAN_GL_IMAGE_SAMPLERS];
+      for (int i = 0; i < STYGIAN_GL_IMAGE_SAMPLERS; ++i) {
+        units[i] = STYGIAN_GL_IMAGE_UNIT_BASE + i;
+      }
+      glUniform1iv(ap->loc_image_tex, STYGIAN_GL_IMAGE_SAMPLERS, units);
+    }
+    ap->sampler_uniforms_dirty = false;
+  }
+
+  if (ap->output_uniforms_dirty) {
+    upload_output_color_transform_uniforms(ap);
+    ap->output_uniforms_dirty = false;
+  }
+}
+
+static void stygian_ap_bind_scene_buffers(StygianAP *ap) {
+  if (!ap)
+    return;
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ap->clip_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ap->soa_ssbo_hot);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ap->soa_ssbo_appearance);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ap->soa_ssbo_effects);
+}
+
+static void stygian_ap_upload_range(StygianAP *ap, GLuint *bound_buffer,
+                                    GLuint buffer, uint32_t abs_min,
+                                    uint32_t range_count, size_t elem_size,
+                                    const void *src) {
+  if (!ap || !bound_buffer || !buffer || range_count == 0u || !src)
+    return;
+  if (*bound_buffer != buffer) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+    *bound_buffer = buffer;
+  }
+  glBufferSubData(GL_SHADER_STORAGE_BUFFER,
+                  (intptr_t)abs_min * (intptr_t)elem_size,
+                  (intptr_t)range_count * (intptr_t)elem_size, src);
+  ap->last_upload_bytes += range_count * (uint32_t)elem_size;
+  ap->last_upload_ranges++;
+}
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
@@ -627,6 +1033,12 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   ap->output_dst_srgb_transfer = true;
   ap->output_src_gamma = 2.4f;
   ap->output_dst_gamma = 2.4f;
+  ap->present_enabled = true;
+  stygian_ap_raw_target_reset(ap);
+  ap->cached_screen_w = -1;
+  ap->cached_screen_h = -1;
+  ap->sampler_uniforms_dirty = true;
+  ap->output_uniforms_dirty = true;
   memset(ap->output_color_matrix, 0, sizeof(ap->output_color_matrix));
   ap->output_color_matrix[0] = 1.0f;
   ap->output_color_matrix[4] = 1.0f;
@@ -690,6 +1102,11 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   LOAD_GL(glBindVertexArray);
   LOAD_GL(glDrawArraysInstanced);
   LOAD_GL(glDrawArraysInstancedBaseInstance);
+  LOAD_GL(glGenFramebuffers);
+  LOAD_GL(glDeleteFramebuffers);
+  LOAD_GL(glBindFramebuffer);
+  LOAD_GL(glCheckFramebufferStatus);
+  LOAD_GL(glFramebufferTexture2D);
   LOAD_GL(glDeleteBuffers);
   LOAD_GL(glDeleteProgram);
   LOAD_GL(glActiveTexture);
@@ -701,6 +1118,20 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   LOAD_GL(glEndQuery);
   LOAD_GL(glGetQueryObjectiv);
   LOAD_GL(glGetQueryObjectui64v);
+  LOAD_GL(glFenceSync);
+  LOAD_GL(glDeleteSync);
+  LOAD_GL(glClientWaitSync);
+  LOAD_GL(glMapBufferRange);
+  LOAD_GL(glUnmapBuffer);
+  ap->raw_target_supported = (glGenFramebuffers && glDeleteFramebuffers &&
+                              glBindFramebuffer && glCheckFramebufferStatus &&
+                              glFramebufferTexture2D);
+
+  stygian_ap_capture_reset_state(ap);
+  ap->capture_supported =
+      (glFenceSync && glDeleteSync && glClientWaitSync && glMapBufferRange &&
+       glUnmapBuffer && glBindBuffer && glBufferData && glGenBuffers &&
+       glDeleteBuffers);
 
   // Check GL version
   const char *version = (const char *)glGetString(GL_VERSION);
@@ -761,12 +1192,10 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   ap->gpu_query_in_flight = false;
   ap->gpu_query_index = 0u;
   ap->last_gpu_ms = 0.0f;
-  ap->gpu_queries[0] = 0u;
-  ap->gpu_queries[1] = 0u;
-  ap->gpu_query_pending[0] = false;
-  ap->gpu_query_pending[1] = false;
+  memset(ap->gpu_queries, 0, sizeof(ap->gpu_queries));
+  memset(ap->gpu_query_pending, 0, sizeof(ap->gpu_query_pending));
   if (ap->gpu_query_initialized) {
-    glGenQueries(2, ap->gpu_queries);
+    glGenQueries(STYGIAN_GL_GPU_QUERY_SLOTS, ap->gpu_queries);
   }
 
   // Allocate GPU-side version tracking for SoA chunk upload
@@ -819,6 +1248,10 @@ void stygian_ap_destroy(StygianAP *ap) {
   if (!ap)
     return;
 
+  stygian_ap_capture_release(ap);
+  ap->capture_supported = false;
+  stygian_ap_raw_target_release(ap);
+
   if (ap->clip_ssbo)
     glDeleteBuffers(1, &ap->clip_ssbo);
   if (ap->soa_ssbo_hot)
@@ -828,13 +1261,11 @@ void stygian_ap_destroy(StygianAP *ap) {
   if (ap->soa_ssbo_effects)
     glDeleteBuffers(1, &ap->soa_ssbo_effects);
   if (ap->gpu_query_initialized) {
-    glDeleteQueries(2, ap->gpu_queries);
-    ap->gpu_queries[0] = 0u;
-    ap->gpu_queries[1] = 0u;
+    glDeleteQueries(STYGIAN_GL_GPU_QUERY_SLOTS, ap->gpu_queries);
+    memset(ap->gpu_queries, 0, sizeof(ap->gpu_queries));
     ap->gpu_query_initialized = false;
     ap->gpu_query_in_flight = false;
-    ap->gpu_query_pending[0] = false;
-    ap->gpu_query_pending[1] = false;
+    memset(ap->gpu_query_pending, 0, sizeof(ap->gpu_query_pending));
   }
   if (ap->vbo)
     glDeleteBuffers(1, &ap->vbo);
@@ -906,7 +1337,8 @@ void stygian_ap_gpu_timer_end(StygianAP *ap) {
 
   // Rotate and poll the previous-frame query to avoid stalling on the query
   // we just ended.
-  ap->gpu_query_index = (uint8_t)((ap->gpu_query_index + 1u) & 1u);
+  ap->gpu_query_index =
+      (uint8_t)((ap->gpu_query_index + 1u) % STYGIAN_GL_GPU_QUERY_SLOTS);
   poll_index = ap->gpu_query_index;
 
   if (!ap->gpu_query_pending[poll_index])
@@ -965,11 +1397,19 @@ bool stygian_ap_reload_shaders(StygianAP *ap) {
   ap->loc_output_src_gamma = new_loc_output_src_gamma;
   ap->loc_output_dst_srgb = new_loc_output_dst_srgb;
   ap->loc_output_dst_gamma = new_loc_output_dst_gamma;
+  ap->current_program = 0u;
+  ap->cached_screen_w = -1;
+  ap->cached_screen_h = -1;
+  ap->sampler_uniforms_dirty = true;
+  ap->output_uniforms_dirty = true;
 
   // Update load timestamp for hot-reload tracking
   ap->shader_load_time = get_shader_newest_mod_time(ap->shader_dir);
-  glUseProgram(ap->program);
-  upload_output_color_transform_uniforms(ap);
+  stygian_ap_bind_program_if_needed(ap);
+  if (ap->output_uniforms_dirty) {
+    upload_output_color_transform_uniforms(ap);
+    ap->output_uniforms_dirty = false;
+  }
 
   printf("[Stygian AP] Shaders reloaded successfully\n");
   return true;
@@ -994,6 +1434,7 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
 
   // Ensure the correct GL context is current for this frame.
   stygian_ap_make_current(ap);
+  stygian_ap_bind_render_target(ap, width, height);
 
   glViewport(0, 0, width, height);
   glClearColor(0.235f, 0.259f, 0.294f, 1.0f);
@@ -1001,20 +1442,9 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  glUseProgram(ap->program);
-  glUniform2f(ap->loc_screen_size, (float)width, (float)height);
-  glUniform1i(ap->loc_font_tex, 1);
-  if (ap->loc_image_tex >= 0 && glUniform1iv) {
-    GLint units[STYGIAN_GL_IMAGE_SAMPLERS];
-    for (int i = 0; i < STYGIAN_GL_IMAGE_SAMPLERS; ++i) {
-      units[i] = STYGIAN_GL_IMAGE_UNIT_BASE + i;
-    }
-    glUniform1iv(ap->loc_image_tex, STYGIAN_GL_IMAGE_SAMPLERS, units);
-  }
-  upload_output_color_transform_uniforms(ap);
-
-  glBindVertexArray(ap->vao);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ap->clip_ssbo);
+  stygian_ap_sync_common_uniforms(ap, width, height);
+  stygian_ap_bind_vao_if_needed(ap);
+  stygian_ap_bind_scene_buffers(ap);
 }
 
 void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
@@ -1068,8 +1498,11 @@ void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
 
   // Bind image textures to configured image units.
   for (uint32_t i = 0; i < mapped_count; ++i) {
+    if (ap->bound_image_textures[i] == (GLuint)mapped_handles[i])
+      continue;
     glActiveTexture(GL_TEXTURE0 + STYGIAN_GL_IMAGE_UNIT_BASE + i);
     glBindTexture(GL_TEXTURE_2D, (GLuint)mapped_handles[i]);
+    ap->bound_image_textures[i] = (GLuint)mapped_handles[i];
   }
 }
 
@@ -1095,13 +1528,13 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
     chunk_count = ap->soa_chunk_count;
   }
 
+  GLuint bound_upload_buffer = 0u;
+
   for (uint32_t ci = 0; ci < chunk_count; ci++) {
     const StygianBufferChunk *c = &chunks[ci];
     uint32_t base = ci * chunk_size;
 
-    // --- Hot buffer ---
     if (ap->gpu_hot_versions && c->hot_version != ap->gpu_hot_versions[ci]) {
-      // Upload only dirty span to preserve DDI scaling on tiny mutations.
       uint32_t dmin = c->hot_dirty_min;
       uint32_t dmax = c->hot_dirty_max;
       if (dmin <= dmax) {
@@ -1111,20 +1544,18 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
           abs_max = element_count - 1;
         if (abs_min < element_count) {
           uint32_t range_count = abs_max - abs_min + 1;
-          glBindBuffer(GL_SHADER_STORAGE_BUFFER, ap->soa_ssbo_hot);
-          glBufferSubData(GL_SHADER_STORAGE_BUFFER,
-                          (intptr_t)abs_min * (intptr_t)sizeof(StygianSoAHot),
-                          (intptr_t)range_count *
-                              (intptr_t)sizeof(StygianSoAHot),
-                          &hot_src[abs_min]);
-          ap->last_upload_bytes += range_count * (uint32_t)sizeof(StygianSoAHot);
-          ap->last_upload_ranges++;
+          stygian_ap_upload_range(ap, &bound_upload_buffer, ap->soa_ssbo_hot,
+                                  abs_min, range_count, sizeof(StygianSoAHot),
+                                  &hot_src[abs_min]);
         }
       }
       ap->gpu_hot_versions[ci] = c->hot_version;
     }
+  }
 
-    // --- Appearance buffer ---
+  for (uint32_t ci = 0; ci < chunk_count; ci++) {
+    const StygianBufferChunk *c = &chunks[ci];
+    uint32_t base = ci * chunk_size;
     if (ap->gpu_appearance_versions &&
         c->appearance_version != ap->gpu_appearance_versions[ci]) {
       uint32_t dmin = c->appearance_dirty_min;
@@ -1136,21 +1567,19 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
           abs_max = element_count - 1;
         if (abs_min < element_count) {
           uint32_t range_count = abs_max - abs_min + 1;
-          glBindBuffer(GL_SHADER_STORAGE_BUFFER, ap->soa_ssbo_appearance);
-          glBufferSubData(
-              GL_SHADER_STORAGE_BUFFER,
-              (intptr_t)abs_min * (intptr_t)sizeof(StygianSoAAppearance),
-              (intptr_t)range_count * (intptr_t)sizeof(StygianSoAAppearance),
-              &appearance[abs_min]);
-          ap->last_upload_bytes +=
-              range_count * (uint32_t)sizeof(StygianSoAAppearance);
-          ap->last_upload_ranges++;
+          stygian_ap_upload_range(ap, &bound_upload_buffer,
+                                  ap->soa_ssbo_appearance, abs_min, range_count,
+                                  sizeof(StygianSoAAppearance),
+                                  &appearance[abs_min]);
         }
       }
       ap->gpu_appearance_versions[ci] = c->appearance_version;
     }
+  }
 
-    // --- Effects buffer ---
+  for (uint32_t ci = 0; ci < chunk_count; ci++) {
+    const StygianBufferChunk *c = &chunks[ci];
+    uint32_t base = ci * chunk_size;
     if (ap->gpu_effects_versions &&
         c->effects_version != ap->gpu_effects_versions[ci]) {
       uint32_t dmin = c->effects_dirty_min;
@@ -1162,15 +1591,9 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
           abs_max = element_count - 1;
         if (abs_min < element_count) {
           uint32_t range_count = abs_max - abs_min + 1;
-          glBindBuffer(GL_SHADER_STORAGE_BUFFER, ap->soa_ssbo_effects);
-          glBufferSubData(
-              GL_SHADER_STORAGE_BUFFER,
-              (intptr_t)abs_min * (intptr_t)sizeof(StygianSoAEffects),
-              (intptr_t)range_count * (intptr_t)sizeof(StygianSoAEffects),
-              &effects[abs_min]);
-          ap->last_upload_bytes +=
-              range_count * (uint32_t)sizeof(StygianSoAEffects);
-          ap->last_upload_ranges++;
+          stygian_ap_upload_range(ap, &bound_upload_buffer,
+                                  ap->soa_ssbo_effects, abs_min, range_count,
+                                  sizeof(StygianSoAEffects), &effects[abs_min]);
         }
       }
       ap->gpu_effects_versions[ci] = c->effects_version;
@@ -1222,6 +1645,15 @@ void stygian_ap_swap(StygianAP *ap) {
   if (!ap)
     return;
   stygian_window_gl_swap_buffers(ap->window);
+}
+
+void stygian_ap_set_present_enabled(StygianAP *ap, bool enable) {
+  if (!ap)
+    return;
+  ap->present_enabled = enable;
+  if (enable && glBindFramebuffer) {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
 }
 
 // ============================================================================
@@ -1287,7 +1719,7 @@ void stygian_ap_set_font_texture(StygianAP *ap, StygianAPTexture tex,
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
 
-  glUseProgram(ap->program);
+  stygian_ap_bind_program_if_needed(ap);
   glUniform2f(ap->loc_atlas_size, (float)atlas_w, (float)atlas_h);
   glUniform1f(ap->loc_px_range, px_range);
 }
@@ -1307,10 +1739,12 @@ void stygian_ap_set_output_color_transform(
   ap->output_dst_srgb_transfer = dst_srgb_transfer;
   ap->output_src_gamma = (src_gamma > 0.0f) ? src_gamma : 2.2f;
   ap->output_dst_gamma = (dst_gamma > 0.0f) ? dst_gamma : 2.2f;
+  ap->output_uniforms_dirty = true;
   if (!ap->program)
     return;
-  glUseProgram(ap->program);
+  stygian_ap_bind_program_if_needed(ap);
   upload_output_color_transform_uniforms(ap);
+  ap->output_uniforms_dirty = false;
 }
 
 // ============================================================================
@@ -1374,8 +1808,6 @@ void stygian_ap_surface_begin(StygianAP *ap, StygianAPSurface *surface,
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  glUseProgram(ap->program);
-
   // Projection uses logical size to match UI layout coordinates across DPI.
   int log_w, log_h;
   if (surface->window) {
@@ -1385,22 +1817,9 @@ void stygian_ap_surface_begin(StygianAP *ap, StygianAPSurface *surface,
     log_h = height;
   }
 
-  glUniform2f(ap->loc_screen_size, (float)log_w, (float)log_h);
-  glUniform1i(ap->loc_font_tex, 1);
-  if (ap->loc_image_tex >= 0 && glUniform1iv) {
-    GLint units[STYGIAN_GL_IMAGE_SAMPLERS];
-    for (int i = 0; i < STYGIAN_GL_IMAGE_SAMPLERS; ++i) {
-      units[i] = STYGIAN_GL_IMAGE_UNIT_BASE + i;
-    }
-    glUniform1iv(ap->loc_image_tex, STYGIAN_GL_IMAGE_SAMPLERS, units);
-  }
-  upload_output_color_transform_uniforms(ap);
-
-  glBindVertexArray(ap->vao);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ap->soa_ssbo_hot);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ap->soa_ssbo_appearance);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ap->soa_ssbo_effects);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ap->clip_ssbo);
+  stygian_ap_sync_common_uniforms(ap, log_w, log_h);
+  stygian_ap_bind_vao_if_needed(ap);
+  stygian_ap_bind_scene_buffers(ap);
 }
 
 void stygian_ap_surface_submit(StygianAP *ap, StygianAPSurface *surface,
@@ -1444,8 +1863,171 @@ void stygian_ap_set_viewport(StygianAP *ap, int width, int height) {
   if (ap->window) {
     int log_w, log_h;
     stygian_window_get_size(ap->window, &log_w, &log_h);
-    glUniform2f(ap->loc_screen_size, (float)log_w, (float)log_h);
+    stygian_ap_sync_common_uniforms(ap, log_w, log_h);
   } else {
-    glUniform2f(ap->loc_screen_size, (float)width, (float)height);
+    stygian_ap_sync_common_uniforms(ap, width, height);
   }
+}
+
+bool stygian_ap_capture_is_supported(const StygianAP *ap) {
+  if (!ap)
+    return false;
+  return ap->capture_supported;
+}
+
+bool stygian_ap_capture_begin(StygianAP *ap) {
+  int width = 0;
+  int height = 0;
+  if (!ap || !ap->capture_supported)
+    return false;
+  stygian_window_get_framebuffer_size(ap->window, &width, &height);
+  if (width <= 0 || height <= 0)
+    return false;
+  if (!stygian_ap_capture_configure(ap, width, height))
+    return false;
+  ap->capture_active = true;
+  return true;
+}
+
+void stygian_ap_capture_end(StygianAP *ap) {
+  if (!ap)
+    return;
+  stygian_ap_capture_release(ap);
+}
+
+bool stygian_ap_capture_request_readback(StygianAP *ap) {
+  uint8_t slot = 0;
+  int width = 0;
+  int height = 0;
+  if (!ap || !ap->capture_supported || !ap->capture_active)
+    return false;
+
+  stygian_window_get_framebuffer_size(ap->window, &width, &height);
+  if (width <= 0 || height <= 0)
+    return false;
+  if (width != ap->capture_width || height != ap->capture_height) {
+    if (!stygian_ap_capture_configure(ap, width, height))
+      return false;
+  }
+
+  slot = ap->capture_write_slot;
+  if (ap->capture_in_flight[slot]) {
+    GLenum wait = glClientWaitSync(ap->capture_fences[slot], 0, 0);
+    if (wait != GL_ALREADY_SIGNALED && wait != GL_CONDITION_SATISFIED) {
+      return false;
+    }
+    glDeleteSync(ap->capture_fences[slot]);
+    ap->capture_fences[slot] = NULL;
+    ap->capture_in_flight[slot] = false;
+  }
+
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, ap->capture_pbos[slot]);
+  glReadBuffer((!ap->present_enabled && ap->raw_fbo) ? GL_COLOR_ATTACHMENT0
+                                                     : GL_BACK);
+  glReadPixels(0, 0, ap->capture_width, ap->capture_height, GL_RGBA,
+               GL_UNSIGNED_BYTE, 0);
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+  ap->capture_fences[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (!ap->capture_fences[slot]) {
+    return false;
+  }
+  ap->capture_frame_counter++;
+  ap->capture_slot_frame_index[slot] = ap->capture_frame_counter;
+  ap->capture_in_flight[slot] = true;
+  ap->capture_write_slot = (uint8_t)((slot + 1u) % STYGIAN_GL_CAPTURE_PBO_SLOTS);
+  return true;
+}
+
+bool stygian_ap_capture_poll_readback(StygianAP *ap, uint8_t *dst_rgba,
+                                      uint32_t dst_bytes,
+                                      StygianAPCaptureFrameInfo *out_info) {
+  uint8_t slot = 0;
+  GLenum wait = GL_WAIT_FAILED;
+  void *mapped = NULL;
+  uint32_t bytes_to_copy = 0u;
+  if (!ap || !ap->capture_supported || !ap->capture_active || !dst_rgba ||
+      dst_bytes == 0u)
+    return false;
+  slot = ap->capture_read_slot;
+  if (!ap->capture_in_flight[slot] || !ap->capture_fences[slot])
+    return false;
+
+  wait = glClientWaitSync(ap->capture_fences[slot], 0, 0);
+  if (wait != GL_ALREADY_SIGNALED && wait != GL_CONDITION_SATISFIED)
+    return false;
+
+  if (out_info) {
+    memset(out_info, 0, sizeof(*out_info));
+    out_info->width = ap->capture_width;
+    out_info->height = ap->capture_height;
+    out_info->stride_bytes = ap->capture_stride_bytes;
+    out_info->frame_index = ap->capture_slot_frame_index[slot];
+    out_info->format = STYGIAN_AP_CAPTURE_FORMAT_RGBA8;
+  }
+  if (dst_bytes < ap->capture_frame_bytes) {
+    return false;
+  }
+
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, ap->capture_pbos[slot]);
+  mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0,
+                            (GLsizeiptr)ap->capture_frame_bytes,
+                            GL_MAP_READ_BIT);
+  if (!mapped) {
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    return false;
+  }
+  bytes_to_copy = ap->capture_frame_bytes;
+  if (dst_bytes < bytes_to_copy)
+    bytes_to_copy = dst_bytes;
+  memcpy(dst_rgba, mapped, bytes_to_copy);
+  glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+  glDeleteSync(ap->capture_fences[slot]);
+  ap->capture_fences[slot] = NULL;
+  ap->capture_in_flight[slot] = false;
+  ap->capture_slot_frame_index[slot] = 0u;
+  ap->capture_read_slot = (uint8_t)((slot + 1u) % STYGIAN_GL_CAPTURE_PBO_SLOTS);
+
+  if (out_info) {
+    out_info->format = STYGIAN_AP_CAPTURE_FORMAT_RGBA8;
+  }
+  return true;
+}
+
+bool stygian_ap_capture_snapshot(StygianAP *ap, uint8_t *dst_rgba,
+                                 uint32_t dst_bytes,
+                                 StygianAPCaptureFrameInfo *out_info) {
+  int width = 0;
+  int height = 0;
+  uint32_t stride = 0u;
+  uint32_t bytes = 0u;
+  if (!ap || !ap->capture_supported || !dst_rgba || dst_bytes == 0u)
+    return false;
+
+  stygian_window_get_framebuffer_size(ap->window, &width, &height);
+  if (width <= 0 || height <= 0)
+    return false;
+  stride = (uint32_t)width * 4u;
+  bytes = stride * (uint32_t)height;
+  if (bytes == 0u || dst_bytes < bytes)
+    return false;
+
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+  glReadBuffer((!ap->present_enabled && ap->raw_fbo) ? GL_COLOR_ATTACHMENT0
+                                                     : GL_BACK);
+  glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, dst_rgba);
+
+  if (out_info) {
+    memset(out_info, 0, sizeof(*out_info));
+    out_info->width = width;
+    out_info->height = height;
+    out_info->stride_bytes = stride;
+    out_info->frame_index = 0u;
+    out_info->format = STYGIAN_AP_CAPTURE_FORMAT_RGBA8;
+  }
+  return true;
 }

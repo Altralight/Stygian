@@ -3,7 +3,6 @@
 
 #include "../backends/stygian_ap.h"
 #include "../include/stygian.h"
-#include "../src/stygian_internal.h" // For ctx->elements access
 #include "../window/stygian_input.h"
 #include "../window/stygian_window.h"
 #include "stygian_dock.h"
@@ -11,6 +10,7 @@
 #include "stygian_tabs.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Platform time helper for double-click detection
@@ -116,21 +116,65 @@ static void ghost_move(StygianDockSpace *dock, int screen_x, int screen_y) {
     }
   }
 }
+
+static void ghost_track_cursor(StygianDockSpace *dock, StygianWindow *win,
+                               int client_x, int client_y,
+                               bool use_global_cursor) {
+  POINT pt;
+  HWND hwnd;
+  if (!dock)
+    return;
+  if (use_global_cursor) {
+    if (!GetCursorPos(&pt))
+      return;
+  } else {
+    if (!win)
+      return;
+    hwnd = (HWND)stygian_window_native_handle(win);
+    if (!hwnd)
+      return;
+    pt.x = client_x;
+    pt.y = client_y;
+    if (!ClientToScreen(hwnd, &pt))
+      return;
+  }
+  if (dock->ghost_visible)
+    ghost_move(dock, pt.x, pt.y);
+  else
+    ghost_show(dock, pt.x, pt.y);
+}
 #else
 // Stubs for non-Windows platforms
-static void ghost_create(StygianDockSpace *dock) { (void)dock; }
+#if defined(__clang__) || defined(__GNUC__)
+#define STYGIAN_UNUSED_FN __attribute__((unused))
+#else
+#define STYGIAN_UNUSED_FN
+#endif
+static void STYGIAN_UNUSED_FN ghost_create(StygianDockSpace *dock) {
+  (void)dock;
+}
 static void ghost_destroy(StygianDockSpace *dock) { (void)dock; }
-static void ghost_show(StygianDockSpace *dock, int x, int y) {
+static void STYGIAN_UNUSED_FN ghost_show(StygianDockSpace *dock, int x, int y) {
   (void)dock;
   (void)x;
   (void)y;
 }
 static void ghost_hide(StygianDockSpace *dock) { (void)dock; }
-static void ghost_move(StygianDockSpace *dock, int x, int y) {
+static void STYGIAN_UNUSED_FN ghost_move(StygianDockSpace *dock, int x, int y) {
   (void)dock;
   (void)x;
   (void)y;
 }
+static void ghost_track_cursor(StygianDockSpace *dock, StygianWindow *win,
+                               int client_x, int client_y,
+                               bool use_global_cursor) {
+  (void)dock;
+  (void)win;
+  (void)client_x;
+  (void)client_y;
+  (void)use_global_cursor;
+}
+#undef STYGIAN_UNUSED_FN
 #endif
 
 // ============================================================================
@@ -155,6 +199,80 @@ static StygianDockPanel *find_panel(StygianDockSpace *dock, uint32_t panel_id) {
     }
   }
   return NULL;
+}
+
+static float dock_text_width_estimate_or_measure(StygianContext *ctx,
+                                                 StygianFont font,
+                                                 const char *text, float size) {
+  size_t len;
+  if (!text || !text[0])
+    return 0.0f;
+  if (font)
+    return stygian_text_width(ctx, font, text, size);
+  len = strlen(text);
+  return (float)len * (size * 0.52f);
+}
+
+static void dock_fit_tab_label(StygianContext *ctx, StygianFont font,
+                               const char *label, float max_width, char *out,
+                               size_t out_cap, float *out_size,
+                               float *out_width) {
+  float size = 13.0f;
+  float width = 0.0f;
+  size_t len;
+  size_t keep;
+  if (!out || out_cap == 0u)
+    return;
+
+  out[0] = '\0';
+  if (!label || !label[0]) {
+    if (out_size)
+      *out_size = size;
+    if (out_width)
+      *out_width = 0.0f;
+    return;
+  }
+
+  len = strlen(label);
+  if (len >= out_cap)
+    len = out_cap - 1u;
+  memcpy(out, label, len);
+  out[len] = '\0';
+
+  if (max_width < 4.0f)
+    max_width = 4.0f;
+  width = dock_text_width_estimate_or_measure(ctx, font, out, size);
+  while (width > max_width && size > 10.0f) {
+    size -= 1.0f;
+    width = dock_text_width_estimate_or_measure(ctx, font, out, size);
+  }
+
+  if (width > max_width && out_cap > 4u) {
+    keep = strlen(out);
+    if (keep > out_cap - 4u)
+      keep = out_cap - 4u;
+    while (keep > 0u) {
+      memcpy(out, label, keep);
+      out[keep] = '\0';
+      strncat(out, "...", out_cap - strlen(out) - 1u);
+      width = dock_text_width_estimate_or_measure(ctx, font, out, size);
+      if (width <= max_width)
+        break;
+      --keep;
+    }
+    if (keep == 0u) {
+      out[0] = '.';
+      out[1] = '.';
+      out[2] = '.';
+      out[3] = '\0';
+      width = dock_text_width_estimate_or_measure(ctx, font, out, size);
+    }
+  }
+
+  if (out_size)
+    *out_size = size;
+  if (out_width)
+    *out_width = width;
 }
 
 // NOTE: Docked panels use pure DDI - render directly to backbuffer.
@@ -188,6 +306,7 @@ StygianDockSpace *stygian_dock_create(void *main_gl_context,
   dock->reorder_src_idx = -1;
   dock->reorder_dst_idx = -1;
   dock->reorder_node = NULL;
+  dock->dragging_floating_idx = -1;
 
   printf("[Stygian Dock] Initialized\n");
   return dock;
@@ -461,8 +580,21 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
 
       // Tab title
       if (font) {
-        stygian_text(ctx, font, panel->title, tab_x + 8, node->y + 6, 14.0f,
-                     0.9f, 0.9f, 0.9f, 1.0f);
+        float title_left = tab_x + 8.0f;
+        float title_right = tab_x + tab_w - 8.0f;
+        char title_buf[64];
+        float title_size = 13.0f;
+        float title_w = 0.0f;
+        float title_x;
+        float title_y;
+        if (panel->closable)
+          title_right -= (14.0f + 10.0f);
+        dock_fit_tab_label(ctx, font, panel->title, title_right - title_left,
+                           title_buf, sizeof(title_buf), &title_size, &title_w);
+        title_x = title_left;
+        title_y = node->y + (dock->tab_height - title_size) * 0.5f;
+        stygian_text(ctx, font, title_buf, title_x, title_y, title_size, 0.9f,
+                     0.9f, 0.9f, 1.0f);
       }
 
       // Close button (right side of tab)
@@ -1151,6 +1283,23 @@ void stygian_dock_update(StygianContext *ctx, StygianFont font,
   for (int i = dock->floating_count - 1; i >= 0; i--) {
     StygianFloatingWindow *fw = &dock->floating[i];
 
+    // Bootstrap fallback: if a layout was loaded with floating panels but no
+    // runtime floating window exists, move those panels back into the main
+    // dock and drop the stale entry.
+    if (!fw->window) {
+      if (fw->root_node && fw->root_node->panel_count > 0 && dock->root) {
+        for (int p = 0; p < fw->root_node->panel_count; p++) {
+          stygian_dock_add_panel_to_node(dock, dock->root,
+                                         fw->root_node->panel_ids[p]);
+        }
+      }
+      for (int j = i; j < dock->floating_count - 1; j++) {
+        dock->floating[j] = dock->floating[j + 1];
+      }
+      dock->floating_count--;
+      continue;
+    }
+
     // Process window events
     if (fw->window) {
       stygian_window_process_events(fw->window);
@@ -1237,35 +1386,12 @@ void stygian_dock_update(StygianContext *ctx, StygianFont font,
         }
         fw->prev_mouse_down = fw_mouse_down;
 
-        // Save current element state (we'll render to floating surface)
-        uint32_t saved_element_count = ctx->element_count;
-
-        // Reset element count for fresh floating window render
-        ctx->element_count = 0;
-
-        fw->root_node->x = 0;
-        fw->root_node->y = 0;
-        fw->root_node->w = (float)fw_w;
-        fw->root_node->h = (float)fw_h;
-
-        // Render the floating window's dock node content
-        render_node_recursive(ctx, font, dock, fw->root_node);
-
-        // Begin rendering to floating window's surface (pass PHYSICAL size)
-        // Note: Using a modified surface_begin signature or assuming checks
+        // Begin rendering to floating window's surface (pass PHYSICAL size).
+        // NOTE: Floating panel surface rendering is intentionally disabled in
+        // bootstrap mode because it requires a separate frame allocator path.
         stygian_ap_surface_begin(ap, fw->surface, fb_w, fb_h);
-
-        // Submit elements to the floating surface
-        if (ctx->element_count > 0) {
-          stygian_ap_surface_submit(ap, fw->surface, ctx->elements,
-                                    ctx->element_count);
-        }
-
         stygian_ap_surface_end(ap, fw->surface);
         stygian_ap_surface_swap(ap, fw->surface);
-
-        // Restore element count for main window render
-        ctx->element_count = saved_element_count;
       }
     }
 
@@ -1386,41 +1512,22 @@ void stygian_dock_update(StygianContext *ctx, StygianFont font,
     if (dock->drag_started) {
       dock->drop_zone = STYGIAN_DROP_NONE;
 
-      // Edge detection: if near window edge, allow floating (clear drop target)
-      int win_w, win_h;
-      stygian_window_get_size(win, &win_w, &win_h);
-      float edge_margin = 30.0f; // 30px from edge = floating zone
-      bool near_edge = (mx < edge_margin || mx > win_w - edge_margin ||
-                        my < edge_margin || my > win_h - edge_margin);
-
-      if (!near_edge) {
-        // O(1) lookup: get node from spatial grid
-        StygianDockNode *target =
-            find_drop_target_fast(dock, (float)mx, (float)my);
-        if (target) {
-          // Now determine which drop zone within this node
-          dock->drop_zone =
-              detect_drop_zone(dock, target, (float)mx, (float)my);
-          dock->drop_target =
-              (dock->drop_zone != STYGIAN_DROP_NONE) ? target : NULL;
-        } else {
-          dock->drop_target = NULL;
-        }
-        // Hide ghost when not near edge
+      // O(1) lookup: get node from spatial grid
+      StygianDockNode *target =
+          find_drop_target_fast(dock, (float)mx, (float)my);
+      if (target) {
+        // Determine which drop zone within this node
+        dock->drop_zone = detect_drop_zone(dock, target, (float)mx, (float)my);
+        dock->drop_target = (dock->drop_zone != STYGIAN_DROP_NONE) ? target : NULL;
+      } else {
+        dock->drop_target = NULL;
+      }
+      if (dock->drop_target) {
         ghost_hide(dock);
       } else {
-        // Near edge = float zone - show external ghost
-        dock->drop_target = NULL;
-
-        // Get screen-space mouse position for ghost window
-#ifdef _WIN32
-        POINT pt;
-        GetCursorPos(&pt);
-        ghost_show(dock, pt.x, pt.y);
-#else
-        // Fallback: use window-relative coords
-        ghost_show(dock, mx, my);
-#endif
+        // floating detach is still off here, but the ghost at least shows the
+        // drag escaped the dock instead of silently doing nothing
+        ghost_track_cursor(dock, win, mx, my, dock->dragging_from_floating);
       }
     }
   }
@@ -1512,22 +1619,9 @@ void stygian_dock_update(StygianContext *ctx, StygianFont font,
         }
       }
     } else if (dock->drag_started && !dock->drop_target) {
-      // Dropped outside any dock zone - float the panel
-      // Position at SCREEN mouse location with default size
-      float float_w = 400.0f;
-      float float_h = 300.0f;
-      float screen_x, screen_y;
-#ifdef _WIN32
-      POINT pt;
-      GetCursorPos(&pt);
-      screen_x = (float)pt.x - float_w / 2;
-      screen_y = (float)pt.y - float_h / 2;
-#else
-      screen_x = (float)mx - float_w / 2;
-      screen_y = (float)my - float_h / 2;
-#endif
-      stygian_dock_float_panel(ctx, dock, dock->dragging_panel_id, screen_x,
-                               screen_y, float_w, float_h);
+      // Dropped outside any dock zone. Floating detach is disabled in
+      // bootstrap mode, so keep the panel in its current docked node.
+      printf("[Stygian Dock] Drop outside dock zone ignored (floating disabled)\n");
     }
 
     // Reset drag state
@@ -1568,49 +1662,15 @@ void stygian_dock_update(StygianContext *ctx, StygianFont font,
       }
     }
 
-    // Render drop zone highlight or floating preview
+    // Render drop zone highlight
     if (dock->drop_target) {
       render_drop_zone_overlay(ctx, dock, dock->drop_target, dock->drop_zone);
-    } else {
-      // No drop target = floating zone - show floating window preview
-      float float_w = 400.0f;
-      float float_h = 300.0f;
-      float float_x = (float)mx - float_w / 2;
-      float float_y = (float)my - float_h / 2;
-
-      // Window-like preview (darker, larger)
-      stygian_rect(ctx, float_x, float_y, float_w, float_h, 0.15f, 0.15f, 0.18f,
-                   0.85f);
-      // Tab bar at top
-      stygian_rect(ctx, float_x, float_y, float_w, dock->tab_height, 0.2f,
-                   0.22f, 0.25f, 0.9f);
-      // Title
-      if (font) {
-        stygian_text(ctx, font, panel->title, float_x + 10, float_y + 6, 14.0f,
-                     0.9f, 0.9f, 0.9f, 1.0f);
-      }
-      // "Float" indicator
-      if (font) {
-        stygian_text(ctx, font, "(FLOAT)", float_x + float_w - 60, float_y + 6,
-                     12.0f, 0.5f, 0.7f, 1.0f, 1.0f);
-      }
     }
   }
 
-  // Restore main window context so subsequent rendering works
-  // Restore main window context so subsequent rendering works
-  if (ap) {
-    stygian_ap_make_current(ap);
-
-    // Also restore viewport (CRITICAL for fixing "small main window" bug)
-    // Use framebuffer size to match physical pixels
-    StygianWindow *win = stygian_get_window(ctx);
-    if (win) {
-      int fb_w, fb_h;
-      stygian_window_get_framebuffer_size(win, &fb_w, &fb_h);
-      stygian_ap_set_viewport(ap, fb_w, fb_h);
-    }
-  }
+  // In bootstrap mode floating surface context switching is disabled.
+  // Main frame rendering continues in the app's normal begin/end frame path.
+  (void)ap;
 }
 
 void stygian_dock_composite_main(StygianDockSpace *dock) {
@@ -1786,12 +1846,6 @@ static void json_key(JsonWriter *w, const char *key) {
   fprintf(w->f, "\"%s\": ", key);
 }
 
-static void json_str(JsonWriter *w, const char *key, const char *val,
-                     bool comma) {
-  json_indent(w);
-  fprintf(w->f, "\"%s\": \"%s\"%s\n", key, val, comma ? "," : "");
-}
-
 static void json_int(JsonWriter *w, const char *key, int val, bool comma) {
   json_indent(w);
   fprintf(w->f, "\"%s\": %d%s\n", key, val, comma ? "," : "");
@@ -1800,12 +1854,6 @@ static void json_int(JsonWriter *w, const char *key, int val, bool comma) {
 static void json_float(JsonWriter *w, const char *key, float val, bool comma) {
   json_indent(w);
   fprintf(w->f, "\"%s\": %.4f%s\n", key, val, comma ? "," : "");
-}
-
-static void json_bool(JsonWriter *w, const char *key, bool val, bool comma) {
-  json_indent(w);
-  fprintf(w->f, "\"%s\": %s%s\n", key, val ? "true" : "false",
-          comma ? "," : "");
 }
 
 // Recursive node serialization

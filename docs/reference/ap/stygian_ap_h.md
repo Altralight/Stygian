@@ -1,71 +1,95 @@
 # stygian_ap.h Reference
 
-This page documents backend abstraction contracts in `backends/stygian_ap.h`.
+This page documents the backend access point contract in `backends/stygian_ap.h`.
 
 ## Purpose
 
-`stygian_ap` is the only layer allowed to touch GPU APIs.
-Core never calls GL/VK directly.
+The AP layer is the only part of Stygian that talks directly to GPU APIs. Core runtime, layout, widgets, and command processing stay above this boundary.
 
-## Types
+## Core Types
 
 - `StygianAP`
+- `StygianAPSurface`
 - `StygianAPConfig`
 - `StygianAPType`
 - `StygianAPAdapterClass`
-- `StygianAPSurface`
 
 ## Lifecycle
 
-- `stygian_ap_create`
-- `stygian_ap_destroy`
-- `stygian_ap_get_adapter_class`
+```c
+StygianAP *stygian_ap_create(const StygianAPConfig *config);
+void stygian_ap_destroy(StygianAP *ap);
+```
 
-## Frame Path APIs
+`stygian_ap_create`
 
-- `stygian_ap_begin_frame`
-- `stygian_ap_submit` (texture remap and bind preparation)
-- `stygian_ap_submit_soa` (versioned chunk upload)
-- `stygian_ap_draw`
-- `stygian_ap_draw_range`
-- `stygian_ap_end_frame`
-- `stygian_ap_swap`
+- Creates the backend device/context path for the configured API.
+- `config->window` is required for the main surface.
+- Returns `NULL` on backend setup failure.
 
-## Multi-Surface APIs
+`stygian_ap_destroy`
 
-- create/destroy surface
-- surface begin/submit/end/swap
-- main surface getter
+- Releases backend-owned GPU resources and contexts.
 
-## Timing and Upload Metrics
+## Frame Submission
 
-- `stygian_ap_get_last_upload_bytes`
-- `stygian_ap_get_last_upload_ranges`
-- `stygian_ap_get_last_gpu_ms`
-- `stygian_ap_gpu_timer_begin`
-- `stygian_ap_gpu_timer_end`
+```c
+void stygian_ap_begin_frame(StygianAP *ap, int width, int height);
+void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
+                           const StygianSoAAppearance *appearance,
+                           const StygianSoAEffects *effects,
+                           uint32_t element_count,
+                           const StygianBufferChunk *chunks,
+                           uint32_t chunk_count, uint32_t chunk_size);
+void stygian_ap_draw(StygianAP *ap);
+void stygian_ap_end_frame(StygianAP *ap);
+void stygian_ap_swap(StygianAP *ap);
+```
 
-Contract:
-- Unsupported timers may report 0.
-- Implementations should avoid stalls while measuring.
+These functions drive the backend frame:
 
-## Resource APIs
+- begin frame and viewport setup
+- upload dirty SoA ranges
+- draw issued batch
+- finalize frame
+- present the main surface
 
-Textures:
-- create/update/destroy/bind
+## Multi-Surface
 
-Shaders:
-- `stygian_ap_reload_shaders`
-- `stygian_ap_shaders_need_reload`
+```c
+StygianAPSurface *stygian_ap_surface_create(StygianAP *ap,
+                                            StygianWindow *window);
+void stygian_ap_surface_destroy(StygianAP *ap, StygianAPSurface *surface);
+void stygian_ap_surface_begin(StygianAP *ap, StygianAPSurface *surface,
+                              int width, int height);
+void stygian_ap_surface_submit(StygianAP *ap, StygianAPSurface *surface,
+                               const StygianSoAHot *soa_hot, uint32_t count);
+void stygian_ap_surface_end(StygianAP *ap, StygianAPSurface *surface);
+void stygian_ap_surface_swap(StygianAP *ap, StygianAPSurface *surface);
+```
 
-Uniform-style state:
+These APIs support additional render surfaces such as floating windows or extra viewports sharing the same backend/device path.
+
+## Textures and Output State
+
+Important APIs:
+
+- `stygian_ap_texture_create`
+- `stygian_ap_texture_update`
+- `stygian_ap_texture_destroy`
 - `stygian_ap_set_font_texture`
 - `stygian_ap_set_output_color_transform`
 - `stygian_ap_set_clips`
 
-## Parity Requirements
+These cover texture residency, font atlas binding, output transform state, and clip-region upload.
 
-Both GL and VK must respect the same core-visible semantics:
-- dirty range upload accounting
-- eval-only frame no-submit behavior
-- consistent timing metric meanings
+## Metrics
+
+Important queries:
+
+- `stygian_ap_get_adapter_class`
+- `stygian_ap_get_last_upload_bytes`
+- `stygian_ap_get_last_upload_ranges`
+- `stygian_ap_get_last_gpu_ms`
+
+These are the bridge between backend work and runtime diagnostics.

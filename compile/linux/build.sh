@@ -39,6 +39,7 @@ build_one() {
 
   args=()
   args+=("${common_flags[@]}")
+  args+=("-D_POSIX_C_SOURCE=200809L")
   for inc in "${common_includes[@]}"; do
     args+=("-I" "$inc")
   done
@@ -52,16 +53,18 @@ build_one() {
   if [[ "$backend" == "vk" ]]; then
     args+=("$(jq -r '.common.vk_backend_source' "$MANIFEST")")
     args+=("window/platform/stygian_x11.c")
+    args+=("window/platform/stygian_wayland.c")
     args+=("-DSTYGIAN_DEMO_VULKAN" "-DSTYGIAN_VULKAN")
     args+=("-lvulkan")
   else
     args+=("$(jq -r '.common.gl_backend_source' "$MANIFEST")")
     args+=("window/platform/stygian_x11.c")
+    args+=("window/platform/stygian_wayland.c")
     args+=("-lGL")
   fi
 
   args+=("-o" "build/${stem}")
-  args+=("-lX11" "-ldl" "-lpthread" "-lm" "-lz" "-lzstd")
+  args+=("-lX11" "-lwayland-client" "-lxkbcommon" "-ldl" "-lpthread" "-lm" "-lz" "-lzstd")
 
   echo "[${name}] Building..."
   "$CLANG_BIN" "${args[@]}"

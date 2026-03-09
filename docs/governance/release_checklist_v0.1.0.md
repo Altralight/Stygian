@@ -10,7 +10,7 @@
 - [x] `compile/windows/run_perf_gates.bat -Backend both -Seconds 6 -Profile aggressive` passes.
 - [x] `compile/run.ps1 -Target text_editor_mini` succeeds.
 - [x] `compile/run.ps1 -Target text_editor_mini_vk` succeeds.
-- [ ] `git status --short` is clean before tagging.
+- [x] `git status --short` is clean before tagging.
 
 ## Repo Hygiene
 - [x] No tracked `deprecated/`, `examples/deprecated/`, or `docs/context/`.
@@ -40,8 +40,8 @@
 - [x] At least one screenshot in repo (screenshots/ directory or assets/)
 
 ## First Release Tag
-- [ ] Tag created: `v0.1.0`
-- [ ] Tag annotation includes summary of:
+- [x] Tag created: `v0.1.0`
+- [x] Tag annotation includes summary of:
   - DDI/eval-only frame split
   - SoA triple-buffer layout
   - multi-platform CI
@@ -49,4 +49,4 @@
 
 ## Publish
 - [x] Push `main` to private GitHub repository.
-- [ ] Push tags.
+- [x] Push tags.

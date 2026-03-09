@@ -101,8 +101,8 @@ The Windows comparison harness, scene coverage, and toolchain caveats live in [b
 Read the benchmark material in this order:
 
 - `docs/perf/benchmark_comparison.md` for the current Stygian baseline
-- `build/comparison/latest/summary.md` -> `Stygian Native Modes` for Stygian's native GPU-path measurements
-- `build/comparison/latest/summary.md` -> `CPU Builder Rows` for the cross-library CPU authoring lane
+- `benchmarks/comparison/latest_results.md` -> `Stygian Native Modes` for Stygian's native GPU-path measurements
+- `benchmarks/comparison/latest_results.md` -> `CPU Builder Rows` for the cross-library CPU authoring lane
 
 ## Screenshots
 

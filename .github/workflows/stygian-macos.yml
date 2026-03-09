@@ -26,6 +26,7 @@ jobs:
           compile/run.sh --target tier2_runtime
           compile/run.sh --target tier3_misuse
           compile/run.sh --target calculator_mini
+          compile/run.sh --target node_graph_demo
 
       # macOS GitHub runners do not provide a reliable headless Cocoa/OpenGL
       # display path, so this job stays compile-only for now.

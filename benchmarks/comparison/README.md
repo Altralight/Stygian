@@ -71,6 +71,7 @@ Output:
 - executables: `build/comparison/`
 - run artifacts: `build/comparison/runs/<timestamp>/`
 - stable latest snapshot: `build/comparison/latest/`
+- committed repo snapshot: `benchmarks/comparison/latest_results.md`
 - `summary.log` also includes `STYGIANDETAIL` lines with scene, average element count, and upload bytes for the Stygian runs
 
 Next steps:

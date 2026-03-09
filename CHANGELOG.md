@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Ongoing follow-up work after the initial `v0.1.0` cut
+
+## [0.1.0] - 2026-03-09
+
+### Added
+
 - Invalidation-driven DDI frame model with render and eval-only paths
 - Triple-buffer SoA layout split into Hot, Appearance, and Effects buffers
 - Multi-producer command buffer system with deterministic single-thread commit
@@ -32,7 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `calculator_mini`
   - `calendar_mini`
   - `text_editor_mini`
-  - `perf_pathological_suite`
+  - `perf_pathological_suite` benchmark and stress harness
+  - `node_graph_demo`
+- Windows comparison harnesses under `benchmarks/comparison/` for Stygian, Dear ImGui, Clay, Nuklear, egui, and dvui
 - Manifest-driven cross-platform build system via `compile/targets.json`, `compile/run.ps1`, and `compile/run.sh`
 - GitHub Actions CI for Windows, Linux, and macOS
 

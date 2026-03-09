@@ -47,3 +47,4 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File compile\run.ps1 -Target tier2_runtime -NoShaderCheck -Clang $env:CLANG
           powershell -NoProfile -ExecutionPolicy Bypass -File compile\run.ps1 -Target tier3_misuse -NoShaderCheck -Clang $env:CLANG
           powershell -NoProfile -ExecutionPolicy Bypass -File compile\run.ps1 -Target calculator_mini -NoShaderCheck -Clang $env:CLANG
+          powershell -NoProfile -ExecutionPolicy Bypass -File compile\run.ps1 -Target node_graph_demo -NoShaderCheck -Clang $env:CLANG

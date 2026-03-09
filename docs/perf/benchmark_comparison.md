@@ -31,7 +31,7 @@ Read the results this way:
 - use the CPU-builder lane as a secondary authoring-cost comparison
 - remember that a stronger dGPU will likely help Stygian more than it helps a CPU-only builder, but the exact gain still has to be measured
 
-There is now a separate Windows comparison lane in [benchmarks/comparison/README.md](/D:/Projects/Code/Stygian/benchmarks/comparison/README.md). That lane is useful, but it is still mixed-mode by design:
+There is now a separate Windows comparison lane in [benchmarks/comparison/README.md](../../benchmarks/comparison/README.md). That lane is useful, but it is still mixed-mode by design:
 
 - `dvui`, `egui`, `imgui`, `clay`, and `nuklear` are measured as `headless-primitive` CPU command builders
 - `stygian` is measured as `raw-gpu-resident` and `eval-only-replay`
@@ -63,9 +63,8 @@ Notes:
 
 Artifacts:
 
-- [latest summary.md](/D:/Projects/Code/Stygian/build/comparison/latest/summary.md)
-- [latest summary.csv](/D:/Projects/Code/Stygian/build/comparison/latest/summary.csv)
-- [latest summary.log](/D:/Projects/Code/Stygian/build/comparison/latest/summary.log)
+- [latest_results.md](../../benchmarks/comparison/latest_results.md)
+- `build/comparison/latest/summary.csv` and `summary.log` are local/generated artifacts from the harness and are not committed to the repo
 
 These rows come from a `0.5s` capture after a `0.25s` warmup. That is enough for a live matrix. It is not enough for the final long-form appendix.
 
@@ -77,7 +76,7 @@ Important caveats:
 ### Reading Order
 
 - Start with the `Current Stygian Baseline` section in this document.
-- Then read `Stygian Native Modes` in [latest summary.md](/D:/Projects/Code/Stygian/build/comparison/latest/summary.md).
+- Then read `Stygian Native Modes` in [latest_results.md](../../benchmarks/comparison/latest_results.md).
 - Use `CPU Builder Rows` in that same file for the cross-library CPU authoring lane.
 - Do not flatten the whole file into one leaderboard. It is not that kind of benchmark.
 
@@ -85,11 +84,11 @@ Important caveats:
 
 | Library | Mode | Cards FPS | Text Wall FPS | Graph FPS | Inspector FPS | Hierarchy FPS |
 |---------|------|-----------|---------------|-----------|---------------|---------------|
-| Stygian | cpu-authoring-full-build | 27.78 | 33.30 | 21.11 | 17.90 | 18.59 |
-| egui | headless-primitive | 50.89 | 60.04 | 26.39 | 26.34 | 32.10 |
-| Dear ImGui | headless-primitive | 30.31 | 56.79 | 20.64 | 18.20 | 15.66 |
-| Clay | headless-primitive | 3.32 | 2.84 | 3.25 | 0.88 | 0.22 |
-| Nuklear | headless-primitive | 431.38 | 1221.52 | 201.71 | 141.80 | 200.37 |
+| Stygian | cpu-authoring-full-build | 27.40 | 27.26 | 19.18 | 14.83 | 17.16 |
+| egui | headless-primitive | 44.39 | 63.45 | 24.58 | 23.07 | 27.23 |
+| Dear ImGui | headless-primitive | 32.21 | 49.18 | 16.81 | 15.65 | 13.43 |
+| Clay | headless-primitive | 3.24 | 3.26 | 3.05 | 0.83 | 0.19 |
+| Nuklear | headless-primitive | 337.90 | 715.13 | 161.50 | 93.15 | 226.81 |
 
 Interpretation:
 
@@ -102,8 +101,8 @@ Interpretation:
 
 | Mode | Cards FPS | Text Wall FPS | Graph FPS | Inspector FPS | Hierarchy FPS |
 |------|-----------|---------------|-----------|---------------|---------------|
-| raw-gpu-resident | 37.88 | 39.60 | 32.21 | 20.46 | 24.87 |
-| eval-only-replay | 39.74 | 39.04 | 30.46 | 21.71 | 15.23 |
+| raw-gpu-resident | 35.41 | 39.33 | 19.76 | 20.30 | 23.93 |
+| eval-only-replay | 35.85 | 38.04 | 23.28 | 14.86 | 22.14 |
 
 Interpretation:
 
@@ -119,13 +118,13 @@ These are the current real scene sizes and upload costs from the same latest art
 |------|-----------------|---------------|---------------|----------------|
 | cards | 110,000 | 0 | 57,408 | 2,116,608 |
 | textwall | 100,000 | 0 | 241,280 | 20,833,280 |
-| graph | 187,437 | 0 | 4,510,288 | 43,321,632 |
-| inspector | 183,301 | 0 | 430,643 | 37,873,888 |
+| graph | 187,437 | 0 | 4,510,288 | 50,252,064 |
+| inspector | 183,301 | 0 | 430,612 | 37,873,888 |
 | hierarchy | 182,500 | 0 | 427,024 | 38,007,424 |
 
 Scene characteristics:
 
-- `cards` and `textwall` are not “10,000 elements” in Stygian once text and decoration are fully counted.
+- `cards` and `textwall` are not "10,000 elements" in Stygian once text and decoration are fully counted.
 - `graph`, `inspector`, and `hierarchy` are heavy scenes. They are the kind of editor workloads that expose real renderer cost instead of letting the engine coast on a toy case.
 - The static rows are still zero-upload after warmup, which is the structural proof Stygian is supposed to deliver.
 
@@ -148,12 +147,13 @@ Scene characteristics:
 | Library | Build ms | Submit ms | Draw Calls | Upload Bytes |
 |---------|----------|-----------|------------|--------------|
 | Stygian | 1.5752 | 0.2850 | 1 | 0 |
-| Dear ImGui | [FILL] | [FILL] | [FILL] | [FILL] |
-| Clay | [FILL] | [FILL] | [FILL] | [FILL] |
+| Dear ImGui | 31.0492 | N/A (headless) | N/A | N/A |
+| Clay | 308.8195 | N/A (headless) | N/A | N/A |
 
 Notes:
 
 - Stygian achieves zero upload on fully static frames via scope replay.
+- Dear ImGui and Clay rows here come from the headless CPU-builder lane, so submit, draw-call, and upload fields are not applicable.
 - Dear ImGui rebuilds vertex buffers every frame by design.
 - Clay is renderer-agnostic CPU layout, not a GPU-resident scene/state-backed renderer.
 
@@ -162,26 +162,28 @@ Notes:
 | Library | Build ms | Submit ms | Draw Calls | Upload Bytes |
 |---------|----------|-----------|------------|--------------|
 | Stygian | 1.6789 | 0.3606 | 1 | 30,784 |
-| Dear ImGui | [FILL] | [FILL] | [FILL] | [FILL] |
-| Clay | [FILL] | [FILL] | [FILL] | [FILL] |
+| Dear ImGui | 34.5171 | N/A (headless) | N/A | N/A |
+| Clay | 311.1197 | N/A (headless) | N/A | N/A |
 
 Notes:
 
 - Stygian uploads only dirty SoA chunks.
 - Upload bytes should scale with dirty element count and chunk coverage, not total scene size.
+- Dear ImGui and Clay rows here come from the headless CPU-builder lane, so submit, draw-call, and upload fields are not applicable.
 
 ### Case 3: Full stress (N=10,000, all elements mutated every frame)
 
 | Library | Build ms | Submit ms | Draw Calls | Upload Bytes |
 |---------|----------|-----------|------------|--------------|
 | Stygian | 3.9017 | 1.1903 | 1 | 2,087,072 |
-| Dear ImGui | [FILL] | [FILL] | [FILL] | [FILL] |
-| Clay | [FILL] | [FILL] | [FILL] | [FILL] |
+| Dear ImGui | 36.6071 | N/A (headless) | N/A | N/A |
+| Clay | 298.4653 | N/A (headless) | N/A | N/A |
 
 Notes:
 
 - This is the regime where Stygian's structural advantages narrow and raw backend quality matters more.
 - Even here, the data-driven immediate SoA path should still avoid needless CPU-side rebuild patterns outside actual mutation.
+- Dear ImGui and Clay rows here come from the headless CPU-builder lane, so submit, draw-call, and upload fields are not applicable.
 
 ## Structural Differences (Not Measurable By Frame Time Alone)
 
@@ -197,7 +199,7 @@ Notes:
 
 ## Measurement Gaps
 
-Replace every remaining `[FILL]` slot with real measurements taken from the same machine, same backend settings, and comparable scene content.
+The remaining gap in this document is end-to-end renderer data for the non-Stygian rows. The current Dear ImGui and Clay values come from the headless CPU-builder lane, so submit, draw-call, and upload columns are not applicable there yet.
 
 Recommended additions:
 

@@ -1,6 +1,6 @@
 // ============================================================================
 // STYGIAN - GPU-Resident UI Library
-// MIT License | https://github.com/[user]/stygian
+// MIT License | https://github.com/StygianFade/Stygian
 // ============================================================================
 #ifndef STYGIAN_H
 #define STYGIAN_H

@@ -31,3 +31,10 @@ capture/
 
 # Private local notes and application drafts
 notes/
+
+# Local review and capture scratch
+win32_followup_improvements.md
+capture_frames
+selected
+quickwindow_capture_smoke*.mp4
+screenshots/node_graph_demo_hero_*.png

@@ -177,6 +177,12 @@ static void interval_add_sample(StygianContext *ctx, PerfIntervalStats *stats,
       (double)stygian_get_last_frame_upload_ranges(ctx);
 }
 
+static void interval_add_idle_sample(PerfIntervalStats *stats) {
+  if (!stats)
+    return;
+  stats->samples++;
+}
+
 static PerfIntervalRow interval_row_make(const PerfIntervalStats *stats,
                                          uint32_t second_index,
                                          StygianContext *ctx) {
@@ -721,7 +727,34 @@ int main(int argc, char **argv) {
     eval_only_frame =
         (!render_frame && (event_eval_requested || event_requested));
     if (!render_frame && !eval_only_frame) {
-      if ((now_seconds() - start_time) >= (double)duration_seconds) {
+      current_time = now_seconds();
+      if (!capture_started && (current_time - start_time) >= warmup_seconds) {
+        capture_started = true;
+        capture_start_time = current_time;
+        next_interval_time = capture_start_time + 1.0;
+        second_index = 0u;
+        memset(&interval_stats, 0, sizeof(interval_stats));
+        memset(&capture_stats, 0, sizeof(capture_stats));
+        printf("BENCHNOTE capture_start=%.3f\n", capture_start_time - start_time);
+      }
+      if (capture_started) {
+        // Idle is supposed to go quiet. Still emit timing rows so the perf
+        // gates don't pretend the harness exploded.
+        interval_add_idle_sample(&interval_stats);
+        interval_add_idle_sample(&capture_stats);
+      }
+      if (capture_started && current_time >= next_interval_time) {
+        PerfIntervalRow row =
+            interval_row_make(&interval_stats, second_index + 1u, ctx);
+        second_index++;
+        interval_log(&row, scenario_label, scene_count, mutate_count, raw_mode,
+                     tick_hz);
+        interval_write_csv(csv_file, &row, scenario_label, scene_count,
+                           mutate_count, raw_mode, tick_hz);
+        memset(&interval_stats, 0, sizeof(interval_stats));
+        next_interval_time += 1.0;
+      }
+      if ((current_time - start_time) >= (double)duration_seconds) {
         break;
       }
       continue;

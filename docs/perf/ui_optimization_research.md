@@ -26,14 +26,14 @@ The short version:
 These are the important realities from the current codebase and recent local profiling:
 
 - The current node showcase is not a clean "64 nodes" test. It is a fragment-heavy scene with:
-  - a background grid that can emit up to 400 rects per frame in [widgets/stygian_widgets.c](D:/Projects/Code/Stygian/widgets/stygian_widgets.c)
-  - around 88 smooth cubic wires in [examples/node_graph_demo.c](D:/Projects/Code/Stygian/examples/node_graph_demo.c)
-  - padded wire bounds in [src/stygian.c](D:/Projects/Code/Stygian/src/stygian.c), where `stygian_wire()` uses `pad = thickness + 32.0f`
+  - a background grid that can emit up to 400 rects per frame in [widgets/stygian_widgets.c](../../widgets/stygian_widgets.c)
+  - around 88 smooth cubic wires in [examples/node_graph_demo.c](../../examples/node_graph_demo.c)
+  - padded wire bounds in [src/stygian.c](../../src/stygian.c), where `stygian_wire()` uses `pad = thickness + 32.0f`
   - rounded node bodies, headers, text, blending, and clip discard
 - The current graph demo is therefore a "fragment stress pretty scene," not a headline benchmark for raw replay-driven throughput.
-- Stygian's text widget was wasting work by calling `stygian_text()` once per visible character. That has now been improved to line-span emission in [widgets/stygian_widgets.c](D:/Projects/Code/Stygian/widgets/stygian_widgets.c), but the engine still expands text into one glyph quad per glyph in [src/stygian.c](D:/Projects/Code/Stygian/src/stygian.c).
+- Stygian's text widget was wasting work by calling `stygian_text()` once per visible character. That has now been improved to line-span emission in [widgets/stygian_widgets.c](../../widgets/stygian_widgets.c), but the engine still expands text into one glyph quad per glyph in [src/stygian.c](../../src/stygian.c).
 - That means the editor path is better than it was, but it is still not a serious large-document renderer.
-- The current GL submit path uses dirty-range `glBufferSubData` uploads per SoA chunk in [backends/stygian_ap_gl.c](D:/Projects/Code/Stygian/backends/stygian_ap_gl.c). This is solid for sparse dirty updates, but it is still a streaming path and not the endgame for fully hot cases.
+- The current GL submit path uses dirty-range `glBufferSubData` uploads per SoA chunk in [backends/stygian_ap_gl.c](../../backends/stygian_ap_gl.c). This is solid for sparse dirty updates, but it is still a streaming path and not the endgame for fully hot cases.
 - Stygian's three SoA buffers currently cost `48 + 64 + 96 = 208 bytes` per element if hot, appearance, and effects all change. That means a worst-case full-hot `100,000`-element frame is about `20.8 MB` of upload before shading cost.
 - At `500 FPS`, that worst case would imply about `10.4 GB/s` of upload bandwidth just for SoA payloads. That is not a realistic full-hot target for an old shared-memory iGPU.
 
@@ -110,7 +110,7 @@ Khronos' early fragment test docs make the important point: if the fragment shad
 
 Why it matters for Stygian:
 
-- The current clip path in [shaders/stygian.frag](D:/Projects/Code/Stygian/shaders/stygian.frag) uses per-fragment clip rejection.
+- The current clip path in [shaders/stygian.frag](../../shaders/stygian.frag) uses per-fragment clip rejection.
 - For rectangular UI clips, Stygian should prefer hardware scissor where possible.
 - Nested clips can still fall back to stencil or mask paths when necessary.
 - The graph grid should not be hundreds of rects. It should be one procedural background element.
@@ -144,7 +144,7 @@ Important takeaways:
 
 Why it matters for Stygian:
 
-- Stygian's current text shader in [shaders/text.glsl](D:/Projects/Code/Stygian/shaders/text.glsl) uses `fwidth(texCoord)` every fragment. That is acceptable, but for 2D UI it is leaving performance on the table.
+- Stygian's current text shader in [shaders/text.glsl](../../shaders/text.glsl) uses `fwidth(texCoord)` every fragment. That is acceptable, but for 2D UI it is leaving performance on the table.
 - The current text path should move to a precomputed per-run or per-instance `screenPxRange` / `unitRange` path.
 - Stygian should keep the atlas in linear space and be paranoid about not letting a PNG loader or sampler state sneak in sRGB treatment.
 - Stygian should stop assuming one text path is enough. Small fixed-size UI labels do not need the full MTSDF cost if a cheaper coverage path looks identical at target size.

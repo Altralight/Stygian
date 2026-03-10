@@ -39,6 +39,10 @@ struct StygianAP {
   uint32_t swapchain_image_count;
   VkFormat swapchain_format;
   VkExtent2D swapchain_extent;
+  VkImage raw_color_image;
+  VkDeviceMemory raw_color_memory;
+  VkImageView raw_color_view;
+  VkFramebuffer raw_framebuffer;
 
   // Render pass & pipeline
   VkRenderPass render_pass;
@@ -48,6 +52,7 @@ struct StygianAP {
   // Resources
   VkBuffer clip_ssbo;
   VkDeviceMemory clip_ssbo_memory;
+  void *clip_ssbo_mapped;
   VkBuffer vertex_buffer;
   VkDeviceMemory vertex_memory;
 
@@ -99,6 +104,7 @@ struct StygianAP {
   uint32_t max_elements;
   uint32_t element_count;
   StygianAllocator *allocator;
+  bool present_enabled;
   uint32_t last_upload_bytes;
   uint32_t last_upload_ranges;
   float last_gpu_ms;
@@ -122,10 +128,13 @@ struct StygianAP {
   // SoA SSBOs (bindings 4/5/6 — mirrors GL backend)
   VkBuffer soa_hot_buf;
   VkDeviceMemory soa_hot_mem;
+  void *soa_hot_mapped;
   VkBuffer soa_appearance_buf;
   VkDeviceMemory soa_appearance_mem;
+  void *soa_appearance_mapped;
   VkBuffer soa_effects_buf;
   VkDeviceMemory soa_effects_mem;
+  void *soa_effects_mapped;
 
   // Per-chunk GPU version tracking (for dirty range upload)
   uint32_t *gpu_hot_versions;
@@ -1284,8 +1293,22 @@ static bool create_swapchain(StygianAP *ap, int width, int height,
   vkGetPhysicalDeviceSurfacePresentModesKHR(ap->physical_device, ap->surface,
                                             &present_mode_count, present_modes);
 
-  // Pick present mode (prefer FIFO for vsync)
+  // Pick present mode.
+  // For normal present we stay conservative. For raw/no-present benchmarking we
+  // want the least amount of queueing drama we can get without inventing a
+  // whole offscreen path here.
   VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+  if (!ap->present_enabled) {
+    for (uint32_t i = 0; i < present_mode_count; i++) {
+      if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+        present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        break;
+      }
+      if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+        present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+      }
+    }
+  }
 
   // Determine extent
   VkExtent2D extent;
@@ -1408,7 +1431,7 @@ static bool create_render_pass(StygianAP *ap) {
       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   };
 
   VkAttachmentReference color_attachment_ref = {
@@ -1476,6 +1499,135 @@ static bool create_framebuffers(StygianAP *ap) {
   }
 
   printf("[Stygian AP VK] Framebuffers created\n");
+  return true;
+}
+
+static void cleanup_raw_target(StygianAP *ap) {
+  if (!ap || !ap->device)
+    return;
+  if (ap->raw_framebuffer) {
+    vkDestroyFramebuffer(ap->device, ap->raw_framebuffer, NULL);
+    ap->raw_framebuffer = VK_NULL_HANDLE;
+  }
+  if (ap->raw_color_view) {
+    vkDestroyImageView(ap->device, ap->raw_color_view, NULL);
+    ap->raw_color_view = VK_NULL_HANDLE;
+  }
+  if (ap->raw_color_image) {
+    vkDestroyImage(ap->device, ap->raw_color_image, NULL);
+    ap->raw_color_image = VK_NULL_HANDLE;
+  }
+  if (ap->raw_color_memory) {
+    vkFreeMemory(ap->device, ap->raw_color_memory, NULL);
+    ap->raw_color_memory = VK_NULL_HANDLE;
+  }
+}
+
+static bool create_raw_target(StygianAP *ap, uint32_t width, uint32_t height) {
+  VkImageCreateInfo image_info;
+  VkMemoryRequirements mem_requirements;
+  VkMemoryAllocateInfo alloc_info;
+  VkImageViewCreateInfo view_info;
+  VkFramebufferCreateInfo fb_info;
+  VkResult result;
+
+  if (!ap || !ap->device || width == 0u || height == 0u)
+    return false;
+
+  if (ap->raw_framebuffer && ap->swapchain_extent.width == width &&
+      ap->swapchain_extent.height == height) {
+    return true;
+  }
+
+  cleanup_raw_target(ap);
+
+  image_info = (VkImageCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = ap->swapchain_format,
+      .extent = {.width = width, .height = height, .depth = 1},
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+  };
+  result =
+      vkCreateImage(ap->device, &image_info, NULL, &ap->raw_color_image);
+  if (result != VK_SUCCESS) {
+    printf("[Stygian AP VK] Failed to create raw color image: %d\n", result);
+    return false;
+  }
+
+  vkGetImageMemoryRequirements(ap->device, ap->raw_color_image,
+                               &mem_requirements);
+  alloc_info = (VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_requirements.size,
+      .memoryTypeIndex = find_memory_type(
+          ap->physical_device, mem_requirements.memoryTypeBits,
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+  };
+  if (alloc_info.memoryTypeIndex == UINT32_MAX ||
+      vkAllocateMemory(ap->device, &alloc_info, NULL, &ap->raw_color_memory) !=
+          VK_SUCCESS) {
+    printf("[Stygian AP VK] Failed to allocate raw color image memory\n");
+    cleanup_raw_target(ap);
+    return false;
+  }
+
+  if (vkBindImageMemory(ap->device, ap->raw_color_image, ap->raw_color_memory,
+                        0) != VK_SUCCESS) {
+    printf("[Stygian AP VK] Failed to bind raw color image memory\n");
+    cleanup_raw_target(ap);
+    return false;
+  }
+
+  view_info = (VkImageViewCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = ap->raw_color_image,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = ap->swapchain_format,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = 1,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+  };
+  if (vkCreateImageView(ap->device, &view_info, NULL, &ap->raw_color_view) !=
+      VK_SUCCESS) {
+    printf("[Stygian AP VK] Failed to create raw color view\n");
+    cleanup_raw_target(ap);
+    return false;
+  }
+
+  {
+    VkImageView attachments[] = {ap->raw_color_view};
+    fb_info = (VkFramebufferCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass = ap->render_pass,
+        .attachmentCount = 1,
+        .pAttachments = attachments,
+        .width = width,
+        .height = height,
+        .layers = 1,
+    };
+  }
+  if (vkCreateFramebuffer(ap->device, &fb_info, NULL, &ap->raw_framebuffer) !=
+      VK_SUCCESS) {
+    printf("[Stygian AP VK] Failed to create raw framebuffer\n");
+    cleanup_raw_target(ap);
+    return false;
+  }
+
+  ap->swapchain_extent.width = width;
+  ap->swapchain_extent.height = height;
   return true;
 }
 
@@ -1647,6 +1799,11 @@ static bool create_buffers(StygianAP *ap) {
     return false;
   }
   vkBindBufferMemory(ap->device, ap->clip_ssbo, ap->clip_ssbo_memory, 0);
+  if (vkMapMemory(ap->device, ap->clip_ssbo_memory, 0, VK_WHOLE_SIZE, 0,
+                  &ap->clip_ssbo_mapped) != VK_SUCCESS) {
+    printf("[Stygian AP VK] Failed to map clip SSBO memory\n");
+    return false;
+  }
 
   // Create SoA SSBOs (hot=binding 4, appearance=binding 5, effects=binding 6)
   struct {
@@ -1690,6 +1847,20 @@ static bool create_buffers(StygianAP *ap) {
     }
 
     vkBindBufferMemory(ap->device, *soa_bufs[si].buf, *soa_bufs[si].mem, 0);
+
+    {
+      void **mapped_slots[3] = {
+          &ap->soa_hot_mapped,
+          &ap->soa_appearance_mapped,
+          &ap->soa_effects_mapped,
+      };
+      if (vkMapMemory(ap->device, *soa_bufs[si].mem, 0, VK_WHOLE_SIZE, 0,
+                      mapped_slots[si]) != VK_SUCCESS) {
+        printf("[Stygian AP VK] Failed to map SoA %s memory\n",
+               soa_bufs[si].name);
+        return false;
+      }
+    }
   }
 
   printf("[Stygian AP VK] SoA SSBOs created (hot: %zu, appearance: %zu, "
@@ -2096,6 +2267,7 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   ap->allocator = config->allocator;
   ap->window = config->window;
   ap->max_elements = config->max_elements > 0 ? config->max_elements : 16384;
+  ap->present_enabled = true;
   ap->atlas_width = 1.0f;
   ap->atlas_height = 1.0f;
   ap->px_range = 4.0f;
@@ -2305,18 +2477,26 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
     vkFreeMemory(ap->device, ap->vertex_memory, NULL);
     if (ap->clip_ssbo)
       vkDestroyBuffer(ap->device, ap->clip_ssbo, NULL);
+    if (ap->clip_ssbo_mapped)
+      vkUnmapMemory(ap->device, ap->clip_ssbo_memory);
     if (ap->clip_ssbo_memory)
       vkFreeMemory(ap->device, ap->clip_ssbo_memory, NULL);
     if (ap->soa_hot_buf)
       vkDestroyBuffer(ap->device, ap->soa_hot_buf, NULL);
+    if (ap->soa_hot_mapped)
+      vkUnmapMemory(ap->device, ap->soa_hot_mem);
     if (ap->soa_hot_mem)
       vkFreeMemory(ap->device, ap->soa_hot_mem, NULL);
     if (ap->soa_appearance_buf)
       vkDestroyBuffer(ap->device, ap->soa_appearance_buf, NULL);
+    if (ap->soa_appearance_mapped)
+      vkUnmapMemory(ap->device, ap->soa_appearance_mem);
     if (ap->soa_appearance_mem)
       vkFreeMemory(ap->device, ap->soa_appearance_mem, NULL);
     if (ap->soa_effects_buf)
       vkDestroyBuffer(ap->device, ap->soa_effects_buf, NULL);
+    if (ap->soa_effects_mapped)
+      vkUnmapMemory(ap->device, ap->soa_effects_mem);
     if (ap->soa_effects_mem)
       vkFreeMemory(ap->device, ap->soa_effects_mem, NULL);
     // ... (cleanup sync, command pool, framebuffers, etc.)
@@ -2405,19 +2585,27 @@ void stygian_ap_destroy(StygianAP *ap) {
     vkFreeMemory(ap->device, ap->vertex_memory, NULL);
   if (ap->clip_ssbo)
     vkDestroyBuffer(ap->device, ap->clip_ssbo, NULL);
+  if (ap->clip_ssbo_mapped)
+    vkUnmapMemory(ap->device, ap->clip_ssbo_memory);
   if (ap->clip_ssbo_memory)
     vkFreeMemory(ap->device, ap->clip_ssbo_memory, NULL);
   // SoA buffer cleanup
   if (ap->soa_hot_buf)
     vkDestroyBuffer(ap->device, ap->soa_hot_buf, NULL);
+  if (ap->soa_hot_mapped)
+    vkUnmapMemory(ap->device, ap->soa_hot_mem);
   if (ap->soa_hot_mem)
     vkFreeMemory(ap->device, ap->soa_hot_mem, NULL);
   if (ap->soa_appearance_buf)
     vkDestroyBuffer(ap->device, ap->soa_appearance_buf, NULL);
+  if (ap->soa_appearance_mapped)
+    vkUnmapMemory(ap->device, ap->soa_appearance_mem);
   if (ap->soa_appearance_mem)
     vkFreeMemory(ap->device, ap->soa_appearance_mem, NULL);
   if (ap->soa_effects_buf)
     vkDestroyBuffer(ap->device, ap->soa_effects_buf, NULL);
+  if (ap->soa_effects_mapped)
+    vkUnmapMemory(ap->device, ap->soa_effects_mem);
   if (ap->soa_effects_mem)
     vkFreeMemory(ap->device, ap->soa_effects_mem, NULL);
   if (ap->font_sampler)
@@ -2430,6 +2618,7 @@ void stygian_ap_destroy(StygianAP *ap) {
     vkFreeMemory(ap->device, ap->font_memory, NULL);
 
   // Destroy framebuffers
+  cleanup_raw_target(ap);
   for (uint32_t i = 0; i < ap->swapchain_image_count; i++) {
     if (ap->framebuffers[i])
       vkDestroyFramebuffer(ap->device, ap->framebuffers[i], NULL);
@@ -2495,6 +2684,11 @@ void stygian_ap_gpu_timer_begin(StygianAP *ap) { (void)ap; }
 void stygian_ap_gpu_timer_end(StygianAP *ap) { (void)ap; }
 
 void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
+  VkCommandBuffer cmd;
+  VkCommandBufferBeginInfo begin_info;
+  VkClearValue clear_color;
+  VkRenderPassBeginInfo render_pass_info;
+
   if (!ap)
     return;
 
@@ -2511,6 +2705,50 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
 
   if (width <= 0 || height <= 0) {
     return; // Minimized window
+  }
+
+  if (!ap->present_enabled) {
+    vkWaitForFences(ap->device, 1, &ap->in_flight[ap->current_frame], VK_TRUE,
+                    UINT64_MAX);
+    update_gpu_timer_sample_for_frame(ap, ap->current_frame);
+    vkResetFences(ap->device, 1, &ap->in_flight[ap->current_frame]);
+
+    if (!create_raw_target(ap, (uint32_t)width, (uint32_t)height)) {
+      return;
+    }
+
+    ap->current_image = 0u;
+    cmd = ap->command_buffers[ap->current_frame];
+    vkResetCommandBuffer(cmd, 0);
+
+    begin_info = (VkCommandBufferBeginInfo){
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cmd, &begin_info);
+
+    if (ap->gpu_timer_supported && ap->gpu_timer_query_pool) {
+      uint32_t query_base = ap->current_frame * 2u;
+      vkCmdResetQueryPool(cmd, ap->gpu_timer_query_pool, query_base, 2u);
+      vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                          ap->gpu_timer_query_pool, query_base);
+    }
+
+    clear_color = (VkClearValue){{{0.1f, 0.1f, 0.1f, 1.0f}}};
+    render_pass_info = (VkRenderPassBeginInfo){
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = ap->render_pass,
+        .framebuffer = ap->raw_framebuffer,
+        .renderArea =
+            {.offset = {0, 0},
+             .extent = {.width = (uint32_t)width, .height = (uint32_t)height}},
+        .clearValueCount = 1,
+        .pClearValues = &clear_color,
+    };
+
+    vkCmdBeginRenderPass(cmd, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+    ap->frame_active = true;
+    return;
   }
 
   if (ap->swapchain_needs_recreate) {
@@ -2601,10 +2839,10 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
   vkResetFences(ap->device, 1, &ap->in_flight[ap->current_frame]);
 
   // Reset and begin command buffer
-  VkCommandBuffer cmd = ap->command_buffers[ap->current_frame];
+  cmd = ap->command_buffers[ap->current_frame];
   vkResetCommandBuffer(cmd, 0);
 
-  VkCommandBufferBeginInfo begin_info = {
+  begin_info = (VkCommandBufferBeginInfo){
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
@@ -2618,8 +2856,8 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
   }
 
   // Begin render pass
-  VkClearValue clear_color = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
-  VkRenderPassBeginInfo render_pass_info = {
+  clear_color = (VkClearValue){{{0.1f, 0.1f, 0.1f, 1.0f}}};
+  render_pass_info = (VkRenderPassBeginInfo){
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
       .renderPass = ap->render_pass,
       .framebuffer = ap->framebuffers[ap->current_image],
@@ -2660,16 +2898,11 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
   ap->last_upload_bytes = 0u;
   ap->last_upload_ranges = 0u;
 
-  // Map once per frame and copy only dirty ranges to keep upload cost bounded.
-  void *hot_mapped = NULL;
-  void *app_mapped = NULL;
-  void *eff_mapped = NULL;
-
-  vkMapMemory(ap->device, ap->soa_hot_mem, 0, VK_WHOLE_SIZE, 0, &hot_mapped);
-  vkMapMemory(ap->device, ap->soa_appearance_mem, 0, VK_WHOLE_SIZE, 0,
-              &app_mapped);
-  vkMapMemory(ap->device, ap->soa_effects_mem, 0, VK_WHOLE_SIZE, 0,
-              &eff_mapped);
+  // GL keeps upload memory hot; Vulkan should not be remapping the same
+  // coherent buffers every frame just to copy a few dirty slices.
+  void *hot_mapped = ap->soa_hot_mapped;
+  void *app_mapped = ap->soa_appearance_mapped;
+  void *eff_mapped = ap->soa_effects_mapped;
 
   for (uint32_t ci = 0; ci < chunk_count; ci++) {
     const StygianBufferChunk *c = &chunks[ci];
@@ -2741,13 +2974,6 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
     }
   }
 
-  // Unmap all three buffers
-  if (hot_mapped)
-    vkUnmapMemory(ap->device, ap->soa_hot_mem);
-  if (app_mapped)
-    vkUnmapMemory(ap->device, ap->soa_appearance_mem);
-  if (eff_mapped)
-    vkUnmapMemory(ap->device, ap->soa_effects_mem);
 }
 
 void stygian_ap_draw(StygianAP *ap) {
@@ -2855,6 +3081,30 @@ void stygian_ap_end_frame(StygianAP *ap) {
   VkCommandBuffer cmd = ap->command_buffers[ap->current_frame];
   vkCmdEndRenderPass(cmd);
 
+  if (ap->present_enabled) {
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = ap->swapchain_images[ap->current_image],
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &barrier);
+  }
+
   if (ap->gpu_timer_supported && ap->gpu_timer_query_pool) {
     uint32_t query_base = ap->current_frame * 2u;
     vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -2873,15 +3123,17 @@ void stygian_ap_end_frame(StygianAP *ap) {
   VkPipelineStageFlags wait_stages[] = {
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
   VkSemaphore signal_semaphores[] = {ap->render_finished[ap->current_frame]};
+  uint32_t wait_count = ap->present_enabled ? 1u : 0u;
+  uint32_t signal_count = 1u;
 
   VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      .waitSemaphoreCount = 1,
-      .pWaitSemaphores = wait_semaphores,
-      .pWaitDstStageMask = wait_stages,
+      .waitSemaphoreCount = wait_count,
+      .pWaitSemaphores = wait_count ? wait_semaphores : NULL,
+      .pWaitDstStageMask = wait_count ? wait_stages : NULL,
       .commandBufferCount = 1,
       .pCommandBuffers = &cmd,
-      .signalSemaphoreCount = 1,
+      .signalSemaphoreCount = signal_count,
       .pSignalSemaphores = signal_semaphores,
   };
 
@@ -2898,12 +3150,20 @@ void stygian_ap_end_frame(StygianAP *ap) {
     return;
   }
 
-  stygian_vk_capture_schedule_for_current_frame(ap);
+  if (ap->present_enabled)
+    stygian_vk_capture_schedule_for_current_frame(ap);
 }
 
 void stygian_ap_swap(StygianAP *ap) {
   if (!ap || !ap->frame_active)
     return;
+
+  if (!ap->present_enabled) {
+    ap->capture_present_wait[ap->current_frame] = false;
+    ap->current_frame = (ap->current_frame + 1) % STYGIAN_VK_FRAMES_IN_FLIGHT;
+    ap->frame_active = false;
+    return;
+  }
 
   // Present
   VkSemaphore wait_semaphores[] = {
@@ -2966,8 +3226,14 @@ void stygian_ap_swap(StygianAP *ap) {
 }
 
 void stygian_ap_set_present_enabled(StygianAP *ap, bool enable) {
-  (void)ap;
-  (void)enable;
+  if (!ap)
+    return;
+  if (ap->present_enabled == enable)
+    return;
+  ap->present_enabled = enable;
+  if (enable) {
+    cleanup_raw_target(ap);
+  }
 }
 
 StygianAPTexture stygian_ap_texture_create(StygianAP *ap, int w, int h,
@@ -3276,20 +3542,13 @@ void stygian_ap_set_output_color_transform(
 }
 
 void stygian_ap_set_clips(StygianAP *ap, const float *clips, uint32_t count) {
-  if (!ap || ap->clip_ssbo_memory == VK_NULL_HANDLE)
+  if (!ap || ap->clip_ssbo_memory == VK_NULL_HANDLE || !ap->clip_ssbo_mapped)
     return;
   if (!clips || count == 0)
     return;
   if (count > STYGIAN_MAX_CLIPS)
     count = STYGIAN_MAX_CLIPS;
-
-  void *data = NULL;
-  if (vkMapMemory(ap->device, ap->clip_ssbo_memory, 0, VK_WHOLE_SIZE, 0,
-                  &data) != VK_SUCCESS) {
-    return;
-  }
-  memcpy(data, clips, count * sizeof(float) * 4);
-  vkUnmapMemory(ap->device, ap->clip_ssbo_memory);
+  memcpy(ap->clip_ssbo_mapped, clips, count * sizeof(float) * 4);
 }
 
 bool stygian_ap_reload_shaders(StygianAP *ap) {

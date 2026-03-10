@@ -2799,8 +2799,10 @@ StygianElement stygian_element_transient(StygianContext *ctx) {
   return e;
 }
 
-uint32_t stygian_element_batch(StygianContext *ctx, uint32_t count,
-                               StygianElement *out_ids) {
+static uint32_t stygian_element_batch_internal(StygianContext *ctx,
+                                               uint32_t count,
+                                               StygianElement *out_ids,
+                                               uint32_t *out_slots) {
   if (!ctx || !out_ids || count == 0)
     return 0;
 
@@ -2818,7 +2820,10 @@ uint32_t stygian_element_batch(StygianContext *ctx, uint32_t count,
     for (uint32_t i = 0; i < n; i++) {
       uint32_t id = ctx->scope_replay_cursor++;
       ctx->soa.hot[id].flags = base_flags;
-      out_ids[i] = (StygianElement)stygian_make_handle(id, ctx->element_generations[id]);
+      out_ids[i] =
+          (StygianElement)stygian_make_handle(id, ctx->element_generations[id]);
+      if (out_slots)
+        out_slots[i] = id;
     }
     if (n < count && ctx->active_scope_index >= 0) {
       ctx->scope_cache[ctx->active_scope_index].dirty = true;
@@ -2843,7 +2848,10 @@ uint32_t stygian_element_batch(StygianContext *ctx, uint32_t count,
 
   for (uint32_t i = 0; i < n; i++) {
     uint32_t id = ctx->free_list[--ctx->free_count];
-    out_ids[i] = (StygianElement)stygian_make_handle(id, ctx->element_generations[id]);
+    out_ids[i] =
+        (StygianElement)stygian_make_handle(id, ctx->element_generations[id]);
+    if (out_slots)
+      out_slots[i] = id;
 
     // SoA init
     memset(&ctx->soa.hot[id], 0, sizeof(StygianSoAHot));
@@ -2867,6 +2875,11 @@ uint32_t stygian_element_batch(StygianContext *ctx, uint32_t count,
     ctx->soa.element_count = max_id;
 
   return n;
+}
+
+uint32_t stygian_element_batch(StygianContext *ctx, uint32_t count,
+                               StygianElement *out_ids) {
+  return stygian_element_batch_internal(ctx, count, out_ids, NULL);
 }
 
 void stygian_element_free(StygianContext *ctx, StygianElement e) {
@@ -4121,7 +4134,9 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
       (uint32_t)(text_len < STYGIAN_TEXT_MAX_BATCH ? text_len
                                                    : STYGIAN_TEXT_MAX_BATCH);
   StygianElement batch_stack[STYGIAN_TEXT_MAX_BATCH];
-  uint32_t allocated = stygian_element_batch(ctx, max_glyphs, batch_stack);
+  uint32_t slot_stack[STYGIAN_TEXT_MAX_BATCH];
+  uint32_t allocated =
+      stygian_element_batch_internal(ctx, max_glyphs, batch_stack, slot_stack);
   uint32_t slot = 0u;
   float cursor_x = x;
   float cursor_y = y;
@@ -4129,12 +4144,8 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
   if (allocated == 0u)
     return 0;
 
-  for (uint32_t i = 0u; i < allocated; i++) {
-    uint32_t id;
-    if (!stygian_resolve_element_slot(ctx, batch_stack[i], &id))
-      continue;
-    ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
-  }
+  for (uint32_t i = 0u; i < allocated; i++)
+    ctx->soa.hot[slot_stack[i]].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count += allocated;
 
   for (size_t i = 0; i < text_len && slot < allocated; i++) {
@@ -4166,8 +4177,7 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
     offset_y = (f->ascender - glyph->plane_top) * size;
 
     e = batch_stack[slot++];
-    if (!stygian_resolve_element_slot(ctx, e, &id))
-      continue;
+    id = slot_stack[slot - 1u];
     if (!first)
       first = e;
 
@@ -4269,18 +4279,15 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
                                                    : STYGIAN_TEXT_MAX_BATCH);
 
   StygianElement batch_stack[STYGIAN_TEXT_MAX_BATCH];
-  uint32_t allocated = stygian_element_batch(ctx, max_glyphs, batch_stack);
+  uint32_t slot_stack[STYGIAN_TEXT_MAX_BATCH];
+  uint32_t allocated =
+      stygian_element_batch_internal(ctx, max_glyphs, batch_stack, slot_stack);
   if (allocated == 0)
     return 0;
 
   // Mark all batch elements as transient upfront
-  for (uint32_t i = 0; i < allocated; i++) {
-    uint32_t id;
-    if (!stygian_resolve_element_slot(ctx, batch_stack[i], &id))
-      continue;
-    // SoA only
-    ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
-  }
+  for (uint32_t i = 0; i < allocated; i++)
+    ctx->soa.hot[slot_stack[i]].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count += allocated;
 
   // Fill loop — direct SoA writes, no setter calls
@@ -4320,9 +4327,7 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
                                        &emoji_backend_tex)) {
         float emoji_px = f->line_height * size;
         StygianElement e = batch_stack[slot++];
-        uint32_t id;
-        if (!stygian_resolve_element_slot(ctx, e, &id))
-          continue;
+        uint32_t id = slot_stack[slot - 1u];
         if (!first)
           first = e;
 
@@ -4365,9 +4370,7 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
     float offset_y = (f->ascender - glyph->plane_top) * size;
 
     StygianElement e = batch_stack[slot++];
-    uint32_t id;
-    if (!stygian_resolve_element_slot(ctx, e, &id))
-      continue;
+    uint32_t id = slot_stack[slot - 1u];
     if (!first)
       first = e;
 

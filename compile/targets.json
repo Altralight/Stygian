@@ -62,6 +62,11 @@
       "entry_source": "examples/node_graph_demo.c",
       "output_stem": "node_graph_demo"
     },
+    "node_graph_demo_vk": {
+      "backend": "vk",
+      "entry_source": "examples/node_graph_demo.c",
+      "output_stem": "node_graph_demo_vk"
+    },
     "quickwindow": {
       "backend": "gl",
       "entry_source": "examples/quickwindow.c",
@@ -155,6 +160,7 @@
       "calendar_mini",
       "perf_pathological_suite",
       "node_graph_demo",
+      "node_graph_demo_vk",
       "text_editor_mini_vk",
       "calculator_mini_vk",
       "calendar_mini_vk",

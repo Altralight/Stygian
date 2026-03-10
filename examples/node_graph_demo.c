@@ -223,6 +223,8 @@ static void node_graph_demo_init(NodeGraphDemo *demo) {
   demo->graph.zoom = 1.0f;
   demo->graph.pan_x = 0.0f;
   demo->graph.pan_y = 0.0f;
+  demo->graph.node_zoom_min = 0.82f;
+  demo->graph.node_zoom_max = 1.10f;
   demo->graph.pin_y_offset = 42.0f;
   demo->graph.pin_size = 12.0f;
   demo->graph.snap_enabled = false;
@@ -283,11 +285,35 @@ static int node_graph_wire_style_for_view(const NodeGraphDemo *demo) {
     return STYGIAN_WIRE_LINE;
   if (demo->benchmark_mode)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.zoom < 1.05f)
+  if (demo->graph.visible_count > 28 || demo->graph.zoom < 1.2f)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.zoom < 1.45f)
+  if (demo->graph.visible_count > 12 || demo->graph.zoom < 1.75f)
     return STYGIAN_WIRE_SHARP;
   return demo->graph.wire_style;
+}
+
+static bool node_graph_link_visible_screen(const NodeGraphDemo *demo, float x1,
+                                           float y1, float x2, float y2,
+                                           float pad) {
+  float l;
+  float t;
+  float r;
+  float b;
+  float min_x;
+  float min_y;
+  float max_x;
+  float max_y;
+  if (!demo)
+    return true;
+  l = demo->graph.x - pad;
+  t = demo->graph.y - pad;
+  r = demo->graph.x + demo->graph.w + pad;
+  b = demo->graph.y + demo->graph.h + pad;
+  min_x = x1 < x2 ? x1 : x2;
+  min_y = y1 < y2 ? y1 : y2;
+  max_x = x1 > x2 ? x1 : x2;
+  max_y = y1 > y2 ? y1 : y2;
+  return (max_x > l && min_x < r && max_y > t && min_y < b);
 }
 
 static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
@@ -402,31 +428,33 @@ static void draw_graph_wires(StygianContext *ctx, const NodeGraphDemo *demo) {
   for (i = 0; i < sizeof(k_graph_links) / sizeof(k_graph_links[0]); ++i) {
     int from = k_graph_links[i].from;
     int to = k_graph_links[i].to;
-    float ax_world = 0.0f;
-    float ay_world = 0.0f;
-    float bx_world = 0.0f;
-    float by_world = 0.0f;
+    float ax_rect_x = 0.0f;
+    float ax_rect_y = 0.0f;
+    float ax_rect_w = 0.0f;
+    float ax_rect_h = 0.0f;
+    float bx_rect_x = 0.0f;
+    float bx_rect_y = 0.0f;
+    float bx_rect_w = 0.0f;
+    float bx_rect_h = 0.0f;
     float ax = 0.0f;
     float ay = 0.0f;
     float bx = 0.0f;
     float by = 0.0f;
-    stygian_graph_pin_center_world(&demo->graph, demo->node_x[from],
-                                   demo->node_y[from], demo->node_w[from], true,
-                                   &ax_world, &ay_world);
-    stygian_graph_pin_center_world(&demo->graph, demo->node_x[to],
-                                   demo->node_y[to], demo->node_w[to], false,
-                                   &bx_world, &by_world);
-    bool visible =
-        (style == STYGIAN_WIRE_SMOOTH)
-            ? stygian_graph_link_visible_bezier(&demo->graph, ax_world,
-                                                ay_world, bx_world, by_world,
-                                                24.0f)
-            : stygian_graph_link_visible(&demo->graph, ax_world, ay_world,
-                                         bx_world, by_world, 24.0f);
+    stygian_graph_pin_rect_screen(&demo->graph, demo->node_x[from],
+                                  demo->node_y[from], demo->node_w[from], true,
+                                  &ax_rect_x, &ax_rect_y, &ax_rect_w,
+                                  &ax_rect_h);
+    stygian_graph_pin_rect_screen(&demo->graph, demo->node_x[to],
+                                  demo->node_y[to], demo->node_w[to], false,
+                                  &bx_rect_x, &bx_rect_y, &bx_rect_w,
+                                  &bx_rect_h);
+    ax = ax_rect_x + ax_rect_w * 0.5f;
+    ay = ax_rect_y + ax_rect_h * 0.5f;
+    bx = bx_rect_x + bx_rect_w * 0.5f;
+    by = bx_rect_y + bx_rect_h * 0.5f;
+    bool visible = node_graph_link_visible_screen(demo, ax, ay, bx, by, 48.0f);
     if (visible) {
       StygianGraphState style_state = demo->graph;
-      stygian_graph_world_to_screen(&demo->graph, ax_world, ay_world, &ax, &ay);
-      stygian_graph_world_to_screen(&demo->graph, bx_world, by_world, &bx, &by);
       style_state.wire_style = style;
       stygian_graph_link(ctx, &style_state, ax, ay, bx, by, 2.0f, wire_color);
     }

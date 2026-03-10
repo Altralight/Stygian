@@ -587,6 +587,8 @@ typedef struct StygianGraphState {
   float x, y, w, h; // Widget rect
   float pan_x, pan_y;
   float zoom;
+  float node_zoom_min;
+  float node_zoom_max;
   bool snap_enabled;
   bool disable_grid;
   float snap_size;

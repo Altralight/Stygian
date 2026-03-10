@@ -3553,6 +3553,18 @@ static void graph_view_bounds(const StygianGraphState *state, float padding,
   *b = -state->pan_y + (state->h * 0.5f) / state->zoom + pad;
 }
 
+static float graph_node_visual_zoom(const StygianGraphState *state) {
+  float z;
+  if (!state)
+    return 1.0f;
+  z = state->zoom;
+  if (state->node_zoom_min > 0.0f && z < state->node_zoom_min)
+    z = state->node_zoom_min;
+  if (state->node_zoom_max > 0.0f && z > state->node_zoom_max)
+    z = state->node_zoom_max;
+  return z;
+}
+
 void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
                               StygianNodeBuffers *data, int count) {
   uint32_t id = widget_id(state->x, state->y, "node_graph");
@@ -3751,11 +3763,13 @@ void stygian_graph_screen_to_world(const StygianGraphState *state, float sx,
 void stygian_graph_node_screen_rect(const StygianGraphState *state, float wx,
                                     float wy, float ww, float wh, float *sx,
                                     float *sy, float *sw, float *sh) {
+  float visual_zoom;
   if (!state || !sx || !sy || !sw || !sh)
     return;
+  visual_zoom = graph_node_visual_zoom(state);
   stygian_graph_world_to_screen(state, wx, wy, sx, sy);
-  *sw = ww * state->zoom;
-  *sh = wh * state->zoom;
+  *sw = ww * visual_zoom;
+  *sh = wh * visual_zoom;
 }
 
 void stygian_graph_pin_center_world(const StygianGraphState *state, float wx,
@@ -3771,21 +3785,22 @@ void stygian_graph_pin_center_world(const StygianGraphState *state, float wx,
 void stygian_graph_pin_rect_screen(const StygianGraphState *state, float wx,
                                    float wy, float ww, bool output, float *x,
                                    float *y, float *w, float *h) {
+  float visual_zoom;
+  float sx;
+  float sy;
+  float pin_offset_y;
   if (!state || !x || !y || !w || !h)
     return;
+  visual_zoom = graph_node_visual_zoom(state);
   float psize =
-      (state->pin_size > 0.0f) ? state->pin_size : (16.0f * state->zoom);
-  float px_world = 0.0f;
-  float py_world = 0.0f;
-  stygian_graph_pin_center_world(state, wx, wy, ww, output, &px_world,
-                                 &py_world);
-  float sx = 0.0f;
-  float sy = 0.0f;
-  stygian_graph_world_to_screen(state, px_world, py_world, &sx, &sy);
+      (state->pin_size > 0.0f) ? state->pin_size : (16.0f * visual_zoom);
+  pin_offset_y =
+      ((state->pin_y_offset > 0.0f) ? state->pin_y_offset : 48.0f) * visual_zoom;
+  stygian_graph_world_to_screen(state, wx, wy, &sx, &sy);
   *w = psize;
   *h = psize;
-  *x = sx - (*w * 0.5f);
-  *y = sy - (*h * 0.5f);
+  *x = output ? ((sx + (ww * visual_zoom)) - (*w * 0.5f)) : (sx - (*w * 0.5f));
+  *y = (sy + pin_offset_y) - (*h * 0.5f);
 }
 
 bool stygian_graph_pin_hit_test(const StygianGraphState *state, float wx,

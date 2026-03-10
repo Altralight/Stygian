@@ -382,9 +382,13 @@ struct StygianAP {
   int cached_screen_h;
   GLuint current_program;
   GLuint current_vao;
+  GLuint current_shader_storage_buffer;
+  GLuint current_ssbo_bindings[7];
   bool sampler_uniforms_dirty;
   bool output_uniforms_dirty;
   GLuint bound_image_textures[16];
+  uint32_t cached_clip_count;
+  float cached_clips[STYGIAN_MAX_CLIPS * 4];
 
   // State
   uint32_t element_count;
@@ -432,6 +436,7 @@ struct StygianAP {
 
   // Remapped hot stream submitted to GPU (texture handles -> sampler slots).
   StygianSoAHot *submit_hot;
+  const StygianSoAHot *submit_hot_src;
 
   // Capture readback ring (PBO)
   bool capture_supported;
@@ -985,10 +990,30 @@ static void stygian_ap_sync_common_uniforms(StygianAP *ap, int logical_w,
 static void stygian_ap_bind_scene_buffers(StygianAP *ap) {
   if (!ap)
     return;
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ap->clip_ssbo);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ap->soa_ssbo_hot);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ap->soa_ssbo_appearance);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ap->soa_ssbo_effects);
+  if (ap->current_ssbo_bindings[3] != ap->clip_ssbo) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ap->clip_ssbo);
+    ap->current_ssbo_bindings[3] = ap->clip_ssbo;
+  }
+  if (ap->current_ssbo_bindings[4] != ap->soa_ssbo_hot) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ap->soa_ssbo_hot);
+    ap->current_ssbo_bindings[4] = ap->soa_ssbo_hot;
+  }
+  if (ap->current_ssbo_bindings[5] != ap->soa_ssbo_appearance) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ap->soa_ssbo_appearance);
+    ap->current_ssbo_bindings[5] = ap->soa_ssbo_appearance;
+  }
+  if (ap->current_ssbo_bindings[6] != ap->soa_ssbo_effects) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ap->soa_ssbo_effects);
+    ap->current_ssbo_bindings[6] = ap->soa_ssbo_effects;
+  }
+}
+
+static void stygian_ap_bind_shader_storage_buffer_if_needed(StygianAP *ap,
+                                                            GLuint buffer) {
+  if (!ap || ap->current_shader_storage_buffer == buffer)
+    return;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+  ap->current_shader_storage_buffer = buffer;
 }
 
 static void stygian_ap_upload_range(StygianAP *ap, GLuint *bound_buffer,
@@ -998,7 +1023,7 @@ static void stygian_ap_upload_range(StygianAP *ap, GLuint *bound_buffer,
   if (!ap || !bound_buffer || !buffer || range_count == 0u || !src)
     return;
   if (*bound_buffer != buffer) {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+    stygian_ap_bind_shader_storage_buffer_if_needed(ap, buffer);
     *bound_buffer = buffer;
   }
   glBufferSubData(GL_SHADER_STORAGE_BUFFER,
@@ -1037,8 +1062,10 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   stygian_ap_raw_target_reset(ap);
   ap->cached_screen_w = -1;
   ap->cached_screen_h = -1;
+  ap->current_shader_storage_buffer = 0u;
   ap->sampler_uniforms_dirty = true;
   ap->output_uniforms_dirty = true;
+  ap->cached_clip_count = 0u;
   memset(ap->output_color_matrix, 0, sizeof(ap->output_color_matrix));
   ap->output_color_matrix[0] = 1.0f;
   ap->output_color_matrix[4] = 1.0f;
@@ -1457,6 +1484,7 @@ void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
   }
 
   ap->element_count = count;
+  ap->submit_hot_src = soa_hot;
 
   // Remap sparse texture handles to dense sampler slots per submit.
   // Texture unit routing:
@@ -1464,17 +1492,21 @@ void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
   //   units 2..(2+N-1): image textures (STYGIAN_TEXTURE)
   uint32_t mapped_handles[STYGIAN_GL_IMAGE_SAMPLERS];
   uint32_t mapped_count = 0;
+  bool copied_submit_hot = false;
 
   for (uint32_t i = 0; i < count; ++i) {
-    ap->submit_hot[i] = soa_hot[i];
-
-    // Read type and texture_id directly from SoA hot
-    // Note: type is packed with render_mode in upper 16 bits, but for checking
-    // STYGIAN_TEXTURE we only care about the lower 16 bits (element type).
-    uint32_t type = ap->submit_hot[i].type & 0xFFFF;
-    uint32_t tex_id = ap->submit_hot[i].texture_id;
+    // Most frames do not need texture slot remapping at all. Borrow the hot
+    // stream directly until the first texture element shows up; only then do we
+    // pay for a copied submit stream.
+    uint32_t type = soa_hot[i].type & 0xFFFF;
+    uint32_t tex_id = soa_hot[i].texture_id;
 
     if (type == STYGIAN_TEXTURE && tex_id != 0) {
+      if (!copied_submit_hot) {
+        memcpy(ap->submit_hot, soa_hot, sizeof(StygianSoAHot) * count);
+        ap->submit_hot_src = ap->submit_hot;
+        copied_submit_hot = true;
+      }
       uint32_t slot = UINT32_MAX;
       for (uint32_t j = 0; j < mapped_count; ++j) {
         if (mapped_handles[j] == tex_id) {
@@ -1518,7 +1550,7 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
                            uint32_t chunk_count, uint32_t chunk_size) {
   if (!ap || !hot || !appearance || !effects || !chunks || element_count == 0)
     return;
-  const StygianSoAHot *hot_src = ap->submit_hot ? ap->submit_hot : hot;
+  const StygianSoAHot *hot_src = ap->submit_hot_src ? ap->submit_hot_src : hot;
 
   ap->last_upload_bytes = 0u;
   ap->last_upload_ranges = 0u;
@@ -1636,9 +1668,16 @@ void stygian_ap_set_clips(StygianAP *ap, const float *clips, uint32_t count) {
   if (count > STYGIAN_MAX_CLIPS)
     count = STYGIAN_MAX_CLIPS;
 
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, ap->clip_ssbo);
+  if (ap->cached_clip_count == count &&
+      memcmp(ap->cached_clips, clips, count * sizeof(float) * 4u) == 0) {
+    return;
+  }
+
+  stygian_ap_bind_shader_storage_buffer_if_needed(ap, ap->clip_ssbo);
   glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, count * sizeof(float) * 4,
                   clips);
+  memcpy(ap->cached_clips, clips, count * sizeof(float) * 4u);
+  ap->cached_clip_count = count;
 }
 
 void stygian_ap_swap(StygianAP *ap) {

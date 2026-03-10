@@ -79,7 +79,7 @@ Output:
 - `summary.log` also includes `STYGIANDETAIL` lines with scene, average element count, and upload bytes for the Stygian runs
 
 Next steps:
-- add a Stygian Vulkan lane beside the current OpenGL-native measurements
+- keep the Stygian native lane current across both OpenGL and Vulkan
 - add a best-fit comparison lane where each library is measured in the environment that best matches its design
 - add Linux/macOS build runners once the base lane is stable
 - add more Rust/Zig harnesses after the methodology settles down

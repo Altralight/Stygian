@@ -67,6 +67,16 @@
       "entry_source": "examples/node_graph_demo.c",
       "output_stem": "node_graph_demo_vk"
     },
+    "browser_mockup": {
+      "backend": "gl",
+      "entry_source": "examples/browser_mockup.c",
+      "output_stem": "browser_mockup"
+    },
+    "browser_mockup_vk": {
+      "backend": "vk",
+      "entry_source": "examples/browser_mockup.c",
+      "output_stem": "browser_mockup_vk"
+    },
     "quickwindow": {
       "backend": "gl",
       "entry_source": "examples/quickwindow.c",
@@ -161,6 +171,8 @@
       "perf_pathological_suite",
       "node_graph_demo",
       "node_graph_demo_vk",
+      "browser_mockup",
+      "browser_mockup_vk",
       "text_editor_mini_vk",
       "calculator_mini_vk",
       "calendar_mini_vk",

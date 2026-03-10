@@ -2679,9 +2679,30 @@ float stygian_ap_get_last_gpu_ms(const StygianAP *ap) {
   return ap->last_gpu_ms;
 }
 
-void stygian_ap_gpu_timer_begin(StygianAP *ap) { (void)ap; }
+void stygian_ap_gpu_timer_begin(StygianAP *ap) {
+  VkCommandBuffer cmd;
+  uint32_t query_base;
+  if (!ap || !ap->frame_active || !ap->gpu_timer_supported ||
+      !ap->gpu_timer_query_pool)
+    return;
+  cmd = ap->command_buffers[ap->current_frame];
+  query_base = ap->current_frame * 2u;
+  vkCmdResetQueryPool(cmd, ap->gpu_timer_query_pool, query_base, 2u);
+  vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                      ap->gpu_timer_query_pool, query_base);
+}
 
-void stygian_ap_gpu_timer_end(StygianAP *ap) { (void)ap; }
+void stygian_ap_gpu_timer_end(StygianAP *ap) {
+  VkCommandBuffer cmd;
+  uint32_t query_base;
+  if (!ap || !ap->frame_active || !ap->gpu_timer_supported ||
+      !ap->gpu_timer_query_pool)
+    return;
+  cmd = ap->command_buffers[ap->current_frame];
+  query_base = ap->current_frame * 2u;
+  vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                      ap->gpu_timer_query_pool, query_base + 1u);
+}
 
 void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
   VkCommandBuffer cmd;
@@ -2726,13 +2747,6 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     vkBeginCommandBuffer(cmd, &begin_info);
-
-    if (ap->gpu_timer_supported && ap->gpu_timer_query_pool) {
-      uint32_t query_base = ap->current_frame * 2u;
-      vkCmdResetQueryPool(cmd, ap->gpu_timer_query_pool, query_base, 2u);
-      vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                          ap->gpu_timer_query_pool, query_base);
-    }
 
     clear_color = (VkClearValue){{{0.1f, 0.1f, 0.1f, 1.0f}}};
     render_pass_info = (VkRenderPassBeginInfo){
@@ -2847,13 +2861,6 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
   vkBeginCommandBuffer(cmd, &begin_info);
-
-  if (ap->gpu_timer_supported && ap->gpu_timer_query_pool) {
-    uint32_t query_base = ap->current_frame * 2u;
-    vkCmdResetQueryPool(cmd, ap->gpu_timer_query_pool, query_base, 2u);
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                        ap->gpu_timer_query_pool, query_base);
-  }
 
   // Begin render pass
   clear_color = (VkClearValue){{{0.1f, 0.1f, 0.1f, 1.0f}}};
@@ -3103,12 +3110,6 @@ void stygian_ap_end_frame(StygianAP *ap) {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
                          NULL, 1, &barrier);
-  }
-
-  if (ap->gpu_timer_supported && ap->gpu_timer_query_pool) {
-    uint32_t query_base = ap->current_frame * 2u;
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        ap->gpu_timer_query_pool, query_base + 1u);
   }
 
   // End command buffer

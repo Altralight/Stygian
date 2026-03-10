@@ -18,73 +18,21 @@
 #define STYGIAN_BROWSER_RENDERER_NAME "OpenGL"
 #endif
 
-typedef struct BrowserPage {
-  const char *tab_label;
+typedef struct BrowserTab {
+  const char *label;
   const char *url;
   const char *title;
-  const char *subtitle;
-  const char *body_lines[3];
-  const char *side_label;
-  const char *side_value;
-} BrowserPage;
+} BrowserTab;
 
-static const BrowserPage k_pages[] = {
-    {
-        .tab_label = "Home",
-        .url = "https://fieldengine.space/",
-        .title = "Field Engine",
-        .subtitle = "A quiet browser shell for native tooling.",
-        .body_lines = {
-            "Pinned capture sessions, build notes, and quick links live here.",
-            "No fake browser engine, no fake tabs, just a useful shell.",
-            "The whole point is native feel without web-stack baggage.",
-        },
-        .side_label = "Pinned",
-        .side_value = "3 tabs",
-    },
-    {
-        .tab_label = "Bench",
-        .url = "https://fieldengine.space/bench",
-        .title = "Bench Notes",
-        .subtitle = "Native lane first. Everything else stays labeled.",
-        .body_lines = {
-            "OpenGL on the HD 4600 is finally in respectable territory.",
-            "Vulkan on the GTX 860M has the headroom to actually look unfair.",
-            "The benchmark story stops lying when the lanes stay separate.",
-        },
-        .side_label = "Latest",
-        .side_value = "1 draw call",
-    },
-    {
-        .tab_label = "Docs",
-        .url = "https://fieldengine.space/docs",
-        .title = "Protocol Notes",
-        .subtitle = "Collect, commit, evaluate, render or skip.",
-        .body_lines = {
-            "This page is where architecture should be readable, not theatrical.",
-            "The docs have enough signal now that they can carry the proposal.",
-            "That took longer than it should have, but here we are.",
-        },
-        .side_label = "Status",
-        .side_value = "CI green",
-    },
-    {
-        .tab_label = "Capture",
-        .url = "https://fieldengine.space/capture",
-        .title = "Capture Queue",
-        .subtitle = "Screenshots, traces, and the bits worth keeping.",
-        .body_lines = {
-            "Node graph, browser shell, chat shell, terminal shell.",
-            "The small apps matter because they make the engine feel real.",
-            "Pretty numbers alone are never enough.",
-        },
-        .side_label = "Queue",
-        .side_value = "4 items",
-    },
+static const BrowserTab k_tabs[] = {
+    {.label = "H", .url = "https://fieldengine.space/", .title = "Home"},
+    {.label = "B", .url = "https://fieldengine.space/bench", .title = "Bench"},
+    {.label = "D", .url = "https://fieldengine.space/docs", .title = "Docs"},
+    {.label = "C", .url = "https://fieldengine.space/capture", .title = "Capture"},
 };
 
-static int browser_page_count(void) {
-  return (int)(sizeof(k_pages) / sizeof(k_pages[0]));
+static int browser_tab_count(void) {
+  return (int)(sizeof(k_tabs) / sizeof(k_tabs[0]));
 }
 
 static void browser_copy_text(char *dst, int cap, const char *src) {
@@ -118,82 +66,10 @@ static bool browser_button(StygianContext *ctx, StygianFont font,
   return stygian_button_ex(ctx, font, &button, style);
 }
 
-static void browser_divider(StygianContext *ctx, float x, float y, float w) {
-  stygian_rect(ctx, x, y, w, 1.0f, 0.20f, 0.22f, 0.25f, 1.0f);
-}
-
-static void browser_stat(StygianContext *ctx, StygianFont font, float x, float y,
-                         float w, const char *label, const char *value) {
-  stygian_rect_rounded(ctx, x, y, w, 86.0f, 0.13f, 0.14f, 0.16f, 1.0f, 16.0f);
-  browser_text(ctx, font, label, x + 18.0f, y + 18.0f, 12.0f, 0.62f, 0.64f, 0.68f,
-               1.0f);
-  browser_text(ctx, font, value, x + 18.0f, y + 42.0f, 24.0f, 0.96f, 0.96f, 0.97f,
-               1.0f);
-}
-
-static void browser_line_block(StygianContext *ctx, StygianFont font, float x,
-                               float y, const char *text) {
-  browser_text(ctx, font, text, x, y, 14.0f, 0.78f, 0.79f, 0.82f, 1.0f);
-}
-
-static void browser_surface(StygianContext *ctx, StygianFont font,
-                            const BrowserPage *page, float x, float y, float w,
-                            float h) {
-  float body_x = x + 30.0f;
-  float side_x = x + w - 260.0f;
-  stygian_rect_rounded(ctx, x, y, w, h, 0.09f, 0.10f, 0.12f, 1.0f, 24.0f);
-  stygian_rect_rounded(ctx, x + 1.0f, y + 1.0f, w - 2.0f, 44.0f, 0.12f, 0.13f,
-                       0.15f, 1.0f, 23.0f);
-  browser_text(ctx, font, page->title, body_x, y + 22.0f, 24.0f, 0.97f, 0.97f,
-               0.98f, 1.0f);
-  browser_text(ctx, font, page->subtitle, body_x, y + 60.0f, 14.0f, 0.70f, 0.71f,
-               0.75f, 1.0f);
-
-  browser_stat(ctx, font, body_x, y + 104.0f, 188.0f, "Renderer",
-               STYGIAN_BROWSER_RENDERER_NAME);
-  browser_stat(ctx, font, body_x + 202.0f, y + 104.0f, 188.0f, page->side_label,
-               page->side_value);
-  browser_stat(ctx, font, body_x + 404.0f, y + 104.0f, 188.0f, "Theme",
-               "Ash / Graphite");
-
-  browser_divider(ctx, body_x, y + 220.0f, w - 60.0f);
-
-  stygian_rect_rounded(ctx, body_x, y + 244.0f, w - 320.0f, 212.0f, 0.12f, 0.13f,
-                       0.15f, 1.0f, 20.0f);
-  browser_text(ctx, font, "Session", body_x + 22.0f, y + 266.0f, 13.0f, 0.60f,
-               0.62f, 0.66f, 1.0f);
-  browser_line_block(ctx, font, body_x + 22.0f, y + 302.0f, page->body_lines[0]);
-  browser_line_block(ctx, font, body_x + 22.0f, y + 334.0f, page->body_lines[1]);
-  browser_line_block(ctx, font, body_x + 22.0f, y + 366.0f, page->body_lines[2]);
-
-  stygian_rect_rounded(ctx, side_x, y + 244.0f, 230.0f, 212.0f, 0.12f, 0.13f,
-                       0.15f, 1.0f, 20.0f);
-  browser_text(ctx, font, "Saved", side_x + 18.0f, y + 266.0f, 13.0f, 0.60f,
-               0.62f, 0.66f, 1.0f);
-  browser_text(ctx, font, "node_graph_demo.png", side_x + 18.0f, y + 304.0f,
-               14.0f, 0.94f, 0.94f, 0.95f, 1.0f);
-  browser_text(ctx, font, "browser_mockup", side_x + 18.0f, y + 336.0f, 14.0f,
-               0.94f, 0.94f, 0.95f, 1.0f);
-  browser_text(ctx, font, "comparison/latest", side_x + 18.0f, y + 368.0f,
-               14.0f, 0.94f, 0.94f, 0.95f, 1.0f);
-  browser_text(ctx, font, "release checklist", side_x + 18.0f, y + 400.0f,
-               14.0f, 0.94f, 0.94f, 0.95f, 1.0f);
-
-  stygian_rect_rounded(ctx, body_x, y + 476.0f, w - 60.0f, h - 508.0f, 0.12f,
-                       0.13f, 0.15f, 1.0f, 20.0f);
-  browser_text(ctx, font, "Notes", body_x + 22.0f, y + 498.0f, 13.0f, 0.60f,
-               0.62f, 0.66f, 1.0f);
-  browser_text(ctx, font,
-               "Keep this shell simple. It is here to sell the runtime, not to "
-               "cosplay as a full browser.",
-               body_x + 22.0f, y + 536.0f, 15.0f, 0.80f, 0.80f, 0.83f, 1.0f);
-}
-
 int main(void) {
-  const StygianScopeId k_scope_chrome = 0x4601u;
-  const StygianScopeId k_scope_page = 0x4602u;
+  const StygianScopeId k_scope_shell = 0x4601u;
   const StygianScopeId k_scope_perf =
-      STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4603u;
+      STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4602u;
 
   StygianWindowConfig win_cfg = {
       .title = "Aster Browser (Stygian Mockup)",
@@ -216,28 +92,29 @@ int main(void) {
   StygianMiniPerfHarness perf;
   bool first_frame = true;
   bool show_perf = false;
-  int active_page = 0;
+  int active_tab = 0;
   char address_buffer[256];
-  const StygianWidgetStyle k_tab_idle = {
-      .bg_color = {0.13f, 0.14f, 0.16f, 1.0f},
-      .hover_color = {0.16f, 0.17f, 0.19f, 1.0f},
-      .active_color = {0.18f, 0.19f, 0.21f, 1.0f},
-      .text_color = {0.82f, 0.83f, 0.86f, 1.0f},
+
+  const StygianWidgetStyle k_rail_idle = {
+      .bg_color = {0.12f, 0.12f, 0.13f, 1.0f},
+      .hover_color = {0.16f, 0.16f, 0.17f, 1.0f},
+      .active_color = {0.18f, 0.18f, 0.19f, 1.0f},
+      .text_color = {0.82f, 0.82f, 0.84f, 1.0f},
       .border_radius = 14.0f,
       .padding = 8.0f,
   };
-  const StygianWidgetStyle k_tab_active = {
-      .bg_color = {0.22f, 0.23f, 0.25f, 1.0f},
-      .hover_color = {0.24f, 0.25f, 0.27f, 1.0f},
-      .active_color = {0.26f, 0.27f, 0.29f, 1.0f},
+  const StygianWidgetStyle k_rail_active = {
+      .bg_color = {0.26f, 0.26f, 0.28f, 1.0f},
+      .hover_color = {0.28f, 0.28f, 0.30f, 1.0f},
+      .active_color = {0.30f, 0.30f, 0.32f, 1.0f},
       .text_color = {0.97f, 0.97f, 0.98f, 1.0f},
       .border_radius = 14.0f,
       .padding = 8.0f,
   };
   const StygianWidgetStyle k_small_button = {
-      .bg_color = {0.13f, 0.14f, 0.16f, 1.0f},
-      .hover_color = {0.16f, 0.17f, 0.19f, 1.0f},
-      .active_color = {0.20f, 0.21f, 0.23f, 1.0f},
+      .bg_color = {0.12f, 0.12f, 0.13f, 1.0f},
+      .hover_color = {0.16f, 0.16f, 0.17f, 1.0f},
+      .active_color = {0.19f, 0.19f, 0.20f, 1.0f},
       .text_color = {0.90f, 0.90f, 0.92f, 1.0f},
       .border_radius = 12.0f,
       .padding = 8.0f,
@@ -246,15 +123,14 @@ int main(void) {
   stygian_mini_perf_init(&perf, "browser_mockup");
   perf.widget.renderer_name = STYGIAN_BROWSER_RENDERER_NAME;
   browser_copy_text(address_buffer, (int)sizeof(address_buffer),
-                    k_pages[active_page].url);
+                    k_tabs[active_tab].url);
 
   while (!stygian_window_should_close(window)) {
     StygianEvent event;
     bool event_mutated = false;
     bool event_requested = false;
     bool event_eval_requested = false;
-    bool chrome_changed = false;
-    bool page_changed = false;
+    bool shell_changed = false;
     uint32_t wait_ms = stygian_next_repaint_wait_ms(ctx, 250u);
 
     stygian_widgets_begin_frame(ctx);
@@ -271,7 +147,7 @@ int main(void) {
       if (event.type == STYGIAN_EVENT_KEY_DOWN && !event.key.repeat) {
         if (event.key.key == STYGIAN_KEY_F1) {
           show_perf = !show_perf;
-          chrome_changed = true;
+          shell_changed = true;
           event_requested = true;
         } else if (event.key.key == STYGIAN_KEY_F11) {
           stygian_window_set_fullscreen(
@@ -297,7 +173,7 @@ int main(void) {
         if (event.type == STYGIAN_EVENT_KEY_DOWN && !event.key.repeat) {
           if (event.key.key == STYGIAN_KEY_F1) {
             show_perf = !show_perf;
-            chrome_changed = true;
+            shell_changed = true;
             event_requested = true;
           } else if (event.key.key == STYGIAN_KEY_F11) {
             stygian_window_set_fullscreen(
@@ -317,11 +193,15 @@ int main(void) {
       bool eval_only_frame =
           (!render_frame && (event_eval_requested || event_requested));
       int width, height;
-      float chrome_x = 20.0f;
-      float chrome_y = 20.0f;
-      float chrome_w;
-      float page_x;
-      float page_y;
+      float rail_x = 12.0f;
+      float rail_y = 12.0f;
+      float rail_w = 58.0f;
+      float rail_h;
+      float bar_x = 82.0f;
+      float bar_y = 12.0f;
+      float bar_w;
+      float page_x = 82.0f;
+      float page_y = 80.0f;
       float page_w;
       float page_h;
 
@@ -330,60 +210,69 @@ int main(void) {
       first_frame = false;
 
       stygian_window_get_size(window, &width, &height);
-      chrome_w = (float)width - 40.0f;
-      page_x = 20.0f;
-      page_y = 150.0f;
-      page_w = (float)width - 40.0f;
-      page_h = (float)height - 170.0f;
+      rail_h = (float)height - 24.0f;
+      bar_w = (float)width - 94.0f;
+      page_w = (float)width - 94.0f;
+      page_h = (float)height - 92.0f;
 
       stygian_begin_frame_intent(
           ctx, width, height,
           eval_only_frame ? STYGIAN_FRAME_EVAL_ONLY : STYGIAN_FRAME_RENDER);
 
-      stygian_scope_begin(ctx, k_scope_chrome);
-      stygian_rect(ctx, 0.0f, 0.0f, (float)width, (float)height, 0.06f, 0.06f,
-                   0.07f, 1.0f);
-      stygian_rect_rounded(ctx, chrome_x, chrome_y, chrome_w, 116.0f, 0.10f,
-                           0.11f, 0.13f, 1.0f, 24.0f);
-      browser_text(ctx, font, "Aster", chrome_x + 24.0f, chrome_y + 22.0f, 22.0f,
-                   0.97f, 0.97f, 0.98f, 1.0f);
-      browser_text(ctx, font, "browser shell mockup", chrome_x + 94.0f,
-                   chrome_y + 26.0f, 12.0f, 0.62f, 0.63f, 0.67f, 1.0f);
+      stygian_scope_begin(ctx, k_scope_shell);
+      stygian_rect(ctx, 0.0f, 0.0f, (float)width, (float)height, 0.07f, 0.07f,
+                   0.08f, 1.0f);
 
-      for (int i = 0; i < browser_page_count(); ++i) {
-        float tab_x = chrome_x + 22.0f + (float)i * 104.0f;
+      stygian_rect_rounded(ctx, rail_x, rail_y, rail_w, rail_h, 0.10f, 0.10f,
+                           0.11f, 1.0f, 22.0f);
+      stygian_rect_rounded(ctx, bar_x, bar_y, bar_w, 56.0f, 0.10f, 0.10f, 0.11f,
+                           1.0f, 22.0f);
+      stygian_rect_rounded(ctx, page_x, page_y, page_w, page_h, 0.11f, 0.11f,
+                           0.12f, 1.0f, 22.0f);
+      stygian_rect_rounded(ctx, page_x + 1.0f, page_y + 1.0f, page_w - 2.0f,
+                           38.0f, 0.13f, 0.13f, 0.14f, 1.0f, 21.0f);
+
+      for (int i = 0; i < browser_tab_count(); ++i) {
+        float tab_y = rail_y + 78.0f + (float)i * 56.0f;
         const StygianWidgetStyle *style =
-            (i == active_page) ? &k_tab_active : &k_tab_idle;
-        if (browser_button(ctx, font, k_pages[i].tab_label, tab_x,
-                           chrome_y + 58.0f, 90.0f, 30.0f, style)) {
-          active_page = i;
+            (i == active_tab) ? &k_rail_active : &k_rail_idle;
+        if (browser_button(ctx, font, k_tabs[i].label, rail_x + 9.0f, tab_y,
+                           40.0f, 40.0f, style)) {
+          active_tab = i;
           browser_copy_text(address_buffer, (int)sizeof(address_buffer),
-                            k_pages[i].url);
-          chrome_changed = true;
-          page_changed = true;
+                            k_tabs[active_tab].url);
+          shell_changed = true;
         }
       }
 
-      if (stygian_text_input(ctx, font, chrome_x + 454.0f, chrome_y + 58.0f,
-                             chrome_w - 620.0f, 30.0f, address_buffer,
-                             (int)sizeof(address_buffer))) {
-        chrome_changed = true;
-      }
-      if (browser_button(ctx, font, "Go", chrome_x + chrome_w - 150.0f,
-                         chrome_y + 58.0f, 54.0f, 30.0f, &k_small_button)) {
-        chrome_changed = true;
-      }
-      if (browser_button(ctx, font, show_perf ? "Perf" : "Perf",
-                         chrome_x + chrome_w - 86.0f, chrome_y + 58.0f, 54.0f,
-                         30.0f, &k_small_button)) {
-        show_perf = !show_perf;
-        chrome_changed = true;
-      }
-      stygian_scope_end(ctx);
+      browser_text(ctx, font, "A", rail_x + 21.0f, rail_y + 22.0f, 18.0f, 0.96f,
+                   0.96f, 0.97f, 1.0f);
+      browser_text(ctx, font, k_tabs[active_tab].title, page_x + 22.0f,
+                   page_y + 12.0f, 14.0f, 0.92f, 0.92f, 0.93f, 1.0f);
+      browser_text(ctx, font, STYGIAN_BROWSER_RENDERER_NAME, rail_x + 12.0f,
+                   rail_y + rail_h - 28.0f, 10.0f, 0.56f, 0.56f, 0.59f, 1.0f);
 
-      stygian_scope_begin(ctx, k_scope_page);
-      browser_surface(ctx, font, &k_pages[active_page], page_x, page_y, page_w,
-                      page_h);
+      browser_text(ctx, font, "Address", bar_x + 24.0f, bar_y + 18.0f, 11.0f,
+                   0.56f, 0.56f, 0.59f, 1.0f);
+      if (stygian_text_input(ctx, font, bar_x + 92.0f, bar_y + 13.0f,
+                             bar_w - 230.0f, 30.0f, address_buffer,
+                             (int)sizeof(address_buffer))) {
+        shell_changed = true;
+      }
+      if (browser_button(ctx, font, "Go", bar_x + bar_w - 122.0f, bar_y + 13.0f,
+                         48.0f, 30.0f, &k_small_button)) {
+        shell_changed = true;
+      }
+      if (browser_button(ctx, font, "F1", bar_x + bar_w - 64.0f, bar_y + 13.0f,
+                         40.0f, 30.0f, &k_small_button)) {
+        show_perf = !show_perf;
+        shell_changed = true;
+      }
+
+      browser_text(ctx, font, k_tabs[active_tab].url, page_x + 22.0f,
+                   page_y + 54.0f, 12.0f, 0.58f, 0.58f, 0.61f, 1.0f);
+      stygian_rect(ctx, page_x + 22.0f, page_y + 74.0f, page_w - 44.0f, 1.0f,
+                   0.18f, 0.18f, 0.20f, 1.0f);
       stygian_scope_end(ctx);
 
       if (show_perf) {
@@ -392,16 +281,14 @@ int main(void) {
         stygian_scope_end(ctx);
       }
 
-      if (chrome_changed || showcase_redraw)
-        stygian_scope_invalidate_next(ctx, k_scope_chrome);
-      if (page_changed || showcase_redraw || event_mutated)
-        stygian_scope_invalidate_next(ctx, k_scope_page);
+      if (shell_changed || showcase_redraw || event_mutated)
+        stygian_scope_invalidate_next(ctx, k_scope_shell);
       if (!show_perf)
         stygian_scope_invalidate_next(ctx, k_scope_perf);
       if (show_perf)
         stygian_scope_invalidate_next(ctx, k_scope_perf);
 
-      if (chrome_changed || page_changed || event_mutated || showcase_redraw) {
+      if (shell_changed || event_mutated || showcase_redraw) {
         stygian_set_repaint_source(ctx, showcase_redraw ? "showcase" : "mutation");
         stygian_request_repaint_after_ms(ctx, 0u);
       }

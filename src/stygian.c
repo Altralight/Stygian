@@ -2885,6 +2885,42 @@ static uint32_t stygian_element_batch_internal(StygianContext *ctx,
   return n;
 }
 
+static StygianElement stygian_replay_consume_batch(StygianContext *ctx,
+                                                   uint32_t count) {
+  uint32_t first_id;
+  uint32_t flags;
+  uint32_t avail;
+  if (!ctx || !ctx->scope_replay_active || count == 0u)
+    return 0;
+
+  avail = (ctx->scope_replay_cursor < ctx->scope_replay_end)
+              ? (ctx->scope_replay_end - ctx->scope_replay_cursor)
+              : 0u;
+  if (count > avail) {
+    if (ctx->active_scope_index >= 0) {
+      ctx->scope_cache[ctx->active_scope_index].dirty = true;
+    }
+    return 0;
+  }
+
+  first_id = ctx->scope_replay_cursor;
+  flags = STYGIAN_FLAG_ALLOCATED | STYGIAN_FLAG_VISIBLE;
+  if (ctx->clip_stack_top > 0u) {
+    uint8_t active_clip = ctx->clip_stack[ctx->clip_stack_top - 1u];
+    flags |= ((uint32_t)active_clip << STYGIAN_CLIP_SHIFT);
+  }
+
+  // Replay only needs the slots to look alive again. Building a handle array
+  // just to throw it away was burning time in text-heavy scopes.
+  for (uint32_t i = 0u; i < count; i++) {
+    ctx->soa.hot[ctx->scope_replay_cursor + i].flags = flags;
+  }
+  ctx->scope_replay_cursor += count;
+
+  return (StygianElement)stygian_make_handle(first_id,
+                                             ctx->element_generations[first_id]);
+}
+
 uint32_t stygian_element_batch(StygianContext *ctx, uint32_t count,
                                StygianElement *out_ids) {
   return stygian_element_batch_internal(ctx, count, out_ids, NULL);
@@ -4236,6 +4272,9 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
   uint32_t glyph_count = stygian_text_span_ascii_glyph_count(str, text_len);
   uint32_t max_glyphs =
       glyph_count < STYGIAN_TEXT_MAX_BATCH ? glyph_count : STYGIAN_TEXT_MAX_BATCH;
+  if (ctx->scope_replay_active)
+    return stygian_replay_consume_batch(ctx, max_glyphs);
+
   StygianElement batch_stack[STYGIAN_TEXT_MAX_BATCH];
   uint32_t slot_stack[STYGIAN_TEXT_MAX_BATCH];
   uint32_t allocated =
@@ -4381,6 +4420,8 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
   uint32_t glyph_count = stygian_text_span_glyph_count(ctx, f, str, text_len);
   uint32_t max_glyphs =
       glyph_count < STYGIAN_TEXT_MAX_BATCH ? glyph_count : STYGIAN_TEXT_MAX_BATCH;
+  if (ctx->scope_replay_active)
+    return stygian_replay_consume_batch(ctx, max_glyphs);
 
   StygianElement batch_stack[STYGIAN_TEXT_MAX_BATCH];
   uint32_t slot_stack[STYGIAN_TEXT_MAX_BATCH];

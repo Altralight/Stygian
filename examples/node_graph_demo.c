@@ -48,6 +48,7 @@ typedef struct NodeGraphDemo {
   float prev_x[NODE_COUNT];
   float prev_y[NODE_COUNT];
   char node_title[NODE_COUNT][32];
+  uint8_t node_title_len[NODE_COUNT];
   int node_type[NODE_COUNT];
   bool node_selected[NODE_COUNT];
   bool show_perf;
@@ -247,6 +248,7 @@ static void node_graph_demo_init(NodeGraphDemo *demo) {
   for (int i = 0; i < NODE_COUNT; ++i) {
     snprintf(demo->node_title[i], sizeof(demo->node_title[i]), "Node %02d",
              i + 1);
+    demo->node_title_len[i] = (uint8_t)strlen(demo->node_title[i]);
   }
   demo->buffers.x = demo->node_x;
   demo->buffers.y = demo->node_y;
@@ -334,8 +336,9 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   if (medium_lod)
     return;
 
-  stygian_text(ctx, 0, demo->node_title[idx], x + 10.0f, y + 4.0f, 16.0f,
-               0.9f, 0.92f, 0.96f, 1.0f);
+  stygian_text_span(ctx, demo->font, demo->node_title[idx],
+                    demo->node_title_len[idx], x + 10.0f, y + 4.0f, 16.0f,
+                    0.9f, 0.92f, 0.96f, 1.0f);
 }
 
 static bool node_graph_positions_changed(NodeGraphDemo *demo) {

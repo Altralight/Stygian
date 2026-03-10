@@ -2733,7 +2733,8 @@ uint32_t stygian_context_get_error_drop_count(const StygianContext *ctx) {
 // Element Allocation
 // ============================================================================
 
-StygianElement stygian_element(StygianContext *ctx) {
+static StygianElement stygian_element_internal(StygianContext *ctx,
+                                               uint32_t *out_slot) {
   uint32_t id;
   if (!ctx)
     return 0;
@@ -2752,6 +2753,8 @@ StygianElement stygian_element(StygianContext *ctx) {
       flags |= ((uint32_t)active_clip << STYGIAN_CLIP_SHIFT);
     }
     ctx->soa.hot[id].flags = flags;
+    if (out_slot)
+      *out_slot = id;
     return (StygianElement)stygian_make_handle(id, ctx->element_generations[id]);
   }
 
@@ -2785,15 +2788,20 @@ StygianElement stygian_element(StygianContext *ctx) {
     ctx->soa.element_count = id + 1;
   }
 
+  if (out_slot)
+    *out_slot = id;
   return (StygianElement)stygian_make_handle(id, ctx->element_generations[id]);
+}
+
+StygianElement stygian_element(StygianContext *ctx) {
+  return stygian_element_internal(ctx, NULL);
 }
 
 StygianElement stygian_element_transient(StygianContext *ctx) {
   uint32_t id;
-  StygianElement e = stygian_element(ctx);
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (e) {
-    if (stygian_resolve_element_slot(ctx, e, &id))
-      ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
+    ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
     ctx->transient_count++;
   }
   return e;
@@ -3587,15 +3595,13 @@ void stygian_end_metaball_group(StygianContext *ctx, StygianElement group) {
 
 StygianElement stygian_rect(StygianContext *ctx, float x, float y, float w,
                             float h, float r, float g, float b, float a) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
     return 0;
 
   if (ctx->suppress_element_writes)
     return e;
-  if (!stygian_resolve_element_slot(ctx, e, &id))
-    return 0;
 
   ctx->soa.hot[id].x = x;
   ctx->soa.hot[id].y = y;
@@ -3612,12 +3618,9 @@ StygianElement stygian_rect(StygianContext *ctx, float x, float y, float w,
 void stygian_rect_rounded(StygianContext *ctx, float x, float y, float w,
                           float h, float r, float g, float b, float a,
                           float radius) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
-    return;
-
-  if (!stygian_resolve_element_slot(ctx, e, &id))
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3643,12 +3646,9 @@ void stygian_rect_rounded(StygianContext *ctx, float x, float y, float w,
 // SDF line segment from (x1,y1) to (x2,y2) with given thickness
 void stygian_line(StygianContext *ctx, float x1, float y1, float x2, float y2,
                   float thickness, float r, float g, float b, float a) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
-    return;
-
-  if (!stygian_resolve_element_slot(ctx, e, &id))
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3681,12 +3681,9 @@ void stygian_line(StygianContext *ctx, float x1, float y1, float x2, float y2,
 void stygian_bezier(StygianContext *ctx, float x1, float y1, float cx, float cy,
                     float x2, float y2, float thickness, float r, float g,
                     float b, float a) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
-    return;
-
-  if (!stygian_resolve_element_slot(ctx, e, &id))
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3729,12 +3726,9 @@ void stygian_bezier(StygianContext *ctx, float x1, float y1, float cx, float cy,
 void stygian_wire(StygianContext *ctx, float x1, float y1, float cp1x,
                   float cp1y, float cp2x, float cp2y, float x2, float y2,
                   float thickness, float r, float g, float b, float a) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
-    return;
-
-  if (!stygian_resolve_element_slot(ctx, e, &id))
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3800,12 +3794,9 @@ void stygian_wire(StygianContext *ctx, float x1, float y1, float cp1x,
 
 void stygian_image(StygianContext *ctx, StygianTexture tex, float x, float y,
                    float w, float h) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
-    return;
-
-  if (!stygian_resolve_element_slot(ctx, e, &id))
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3833,12 +3824,9 @@ void stygian_image(StygianContext *ctx, StygianTexture tex, float x, float y,
 void stygian_image_uv(StygianContext *ctx, StygianTexture tex, float x, float y,
                       float w, float h, float u0, float v0, float u1,
                       float v1) {
-  StygianElement e = stygian_element(ctx);
   uint32_t id;
+  StygianElement e = stygian_element_internal(ctx, &id);
   if (!e)
-    return;
-
-  if (!stygian_resolve_element_slot(ctx, e, &id))
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;

@@ -26,7 +26,9 @@ If you flatten all of those into one scoreboard, the result is garbage.
   - GPU: `Intel(R) HD Graphics 4600`
   - OS: `Microsoft Windows 11 Pro 10.0.26100`
   - Driver: `20.19.15.4624`
-- Backend: OpenGL 4.3
+- Native backend baselines in this document currently cover:
+  - OpenGL 4.3 on `Intel(R) HD Graphics 4600`
+  - Vulkan 1.x on `NVIDIA GeForce GTX 860M`
 - Frame budget: 16.67ms (60 FPS target)
 - Metrics:
   - CPU build time (ms)
@@ -60,24 +62,27 @@ There is now a separate Windows comparison lane in [benchmarks/comparison/README
 
 ## Current Stygian Baseline (Local, Raw, No-Present)
 
-| Case | Count | Dirty | Wall FPS | Render ms | Build ms | Submit ms | Draw Calls | Upload Bytes |
-|------|-------|-------|----------|-----------|----------|-----------|------------|--------------|
-| Static scene (clean replay) | 10,000 | 0 | 457.66 | 1.8602 | 1.5752 | 0.2850 | 1 | 0 |
-| Sparse dirty scene | 10,000 | 100 | 418.44 | 2.0395 | 1.6789 | 0.3606 | 1 | 30,784 |
-| Full-hot scene | 10,000 | all | 185.58 | 5.0920 | 3.9017 | 1.1903 | 1 | 2,087,072 |
-| Static scene (clean replay) | 100,000 | 0 | 60.41 | 14.2607 | 11.1202 | 3.1405 | 1 | 0 |
-| Sparse dirty scene | 100,000 | 1,000 | 75.64 | 11.3359 | 9.0200 | 2.3159 | 1 | 247,936 |
-| Full-hot scene | 100,000 | all | 20.33 | 47.9315 | 36.5910 | 11.3405 | 1 | 20,807,072 |
-| Text editor static scene | 122 visible glyph elements | 0 | 579.77 | 1.5522 | 1.4728 | 0.0794 | 1 | 0 |
-| Node graph showcase (pretty) | 64 nodes, labeled | scene redraw | 512.50 | 1.7715 | 1.6773 | 0.0942 | 1 | scene-dependent |
-| Node graph benchmark mode | 64 nodes, stripped | scene redraw | 509.00 | 1.7863 | 1.6920 | 0.0943 | 1 | scene-dependent |
+| Backend | Hardware | Case | Count | Dirty | Wall FPS | Render ms | Build ms | Submit ms | Draw Calls | Upload Bytes |
+|---------|----------|------|-------|-------|----------|-----------|----------|-----------|------------|--------------|
+| OpenGL | HD 4600 | Text editor static scene | 122 visible glyph elements | 0 | 662.09 | 1.3157 | 1.2421 | 0.0736 | 1 | 0 |
+| OpenGL | HD 4600 | Static scene (clean replay) | 10,000 | 0 | 597.92 | 1.3545 | 1.2380 | 0.1165 | 1 | 0 |
+| OpenGL | HD 4600 | Sparse dirty scene | 10,000 | 100 | 418.44 | 2.0395 | 1.6789 | 0.3606 | 1 | 30,784 |
+| OpenGL | HD 4600 | Full-hot scene | 10,000 | all | 185.58 | 5.0920 | 3.9017 | 1.1903 | 1 | 2,087,072 |
+| OpenGL | HD 4600 | Static scene (clean replay) | 100,000 | 0 | 60.41 | 14.2607 | 11.1202 | 3.1405 | 1 | 0 |
+| OpenGL | HD 4600 | Sparse dirty scene | 100,000 | 1,000 | 75.64 | 11.3359 | 9.0200 | 2.3159 | 1 | 247,936 |
+| OpenGL | HD 4600 | Full-hot scene | 100,000 | all | 20.33 | 47.9315 | 36.5910 | 11.3405 | 1 | 20,807,072 |
+| Vulkan | GTX 860M | Text editor static scene | 122 visible glyph elements | 0 | 1886.74 | 0.3569 | 0.3465 | 0.0104 | 1 | 0 |
+| Vulkan | GTX 860M | Static scene (clean replay) | 10,000 | 0 | 970.92 | 0.6659 | 0.6546 | 0.0112 | 1 | 0 |
+| OpenGL | HD 4600 | Node graph showcase (pretty) | 64 nodes, labeled | scene redraw | 598.00 | 1.4900 | 1.3550 | 0.1350 | 1 | scene-dependent |
+| OpenGL | HD 4600 | Node graph benchmark mode | 64 nodes, stripped | scene redraw | 509.00 | 1.7863 | 1.6920 | 0.0943 | 1 | scene-dependent |
 
 Notes:
 
 - `100k @ 500 FPS` is not real for a dense visible scene on this machine.
 - The invalidation/replay and SoA data-model story is still real: static frames do reach zero upload after warmup.
 - Sparse dirty cases scale much better than full-hot cases, which is exactly what the architecture is supposed to buy.
-- The node/text showcase numbers were previously underreported because the benchmark path was paying for low-grade Windows timers and GL timer-query overhead.
+- The node/text showcase numbers were previously underreported because the benchmark path was paying for low-grade Windows timers, GL timer-query overhead, and unnecessary Vulkan frame-boundary work.
+- The biggest recent wins came from core allocation/replay cleanup and backend frame semantics, not benchmark-only shortcuts. Those same paths are used by real apps and shipped demos.
 
 ## Current Windows Headless Comparison Lane (10k, Local)
 
@@ -154,7 +159,7 @@ Scene characteristics:
 - The CPU Builder section is a secondary apples-to-apples lane for Stygian authoring cost versus the other headless builders.
 - Nuklear remains the fastest lightweight CPU-builder lane in this matrix.
 - Stygian's differentiator is not "highest static FPS in every harness." It is the combination of data-driven immediate authoring, persistent scene/state backing, replay/skip paths, dirty upload accounting, GPU-native SDF rendering, and a real renderer path with one draw call.
-- Future public comparisons should add a Vulkan-native Stygian lane and a separate best-fit lane instead of pretending every stack is solving the same problem.
+- The current native lane now includes both OpenGL and Vulkan. Future public comparisons should still add a separate best-fit lane instead of pretending every stack is solving the same problem.
 
 ### Latest Sanity Measurement
 
@@ -224,7 +229,6 @@ The remaining gap in this document is end-to-end renderer data for the non-Stygi
 
 Recommended additions:
 
-- Stygian Vulkan baselines beside the current OpenGL-native path
 - a best-fit comparison lane where each library runs in the environment that best matches its design
 - p95 frame time
 - CPU package and GPU utilization snapshots

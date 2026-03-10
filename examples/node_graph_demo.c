@@ -12,6 +12,18 @@
 #include <windows.h>
 #endif
 
+#ifdef STYGIAN_DEMO_VULKAN
+#define STYGIAN_NODE_GRAPH_BACKEND STYGIAN_BACKEND_VULKAN
+#define STYGIAN_NODE_GRAPH_WINDOW_FLAGS                                         \
+  (STYGIAN_WINDOW_RESIZABLE | STYGIAN_WINDOW_VULKAN)
+#define STYGIAN_NODE_GRAPH_RENDERER_NAME "Vulkan"
+#else
+#define STYGIAN_NODE_GRAPH_BACKEND STYGIAN_BACKEND_OPENGL
+#define STYGIAN_NODE_GRAPH_WINDOW_FLAGS                                         \
+  (STYGIAN_WINDOW_RESIZABLE | STYGIAN_WINDOW_OPENGL)
+#define STYGIAN_NODE_GRAPH_RENDERER_NAME "OpenGL"
+#endif
+
 #define NODE_COUNT 64
 #define GRID_COLS 8
 #define GRID_ROWS 8
@@ -223,8 +235,6 @@ static void node_graph_demo_init(NodeGraphDemo *demo) {
   demo->graph.zoom = 1.0f;
   demo->graph.pan_x = 0.0f;
   demo->graph.pan_y = 0.0f;
-  demo->graph.node_zoom_min = 0.82f;
-  demo->graph.node_zoom_max = 1.10f;
   demo->graph.pin_y_offset = 42.0f;
   demo->graph.pin_size = 12.0f;
   demo->graph.snap_enabled = false;
@@ -259,7 +269,7 @@ static void node_graph_demo_init(NodeGraphDemo *demo) {
   demo->buffers.type_id = demo->node_type;
   demo->buffers.selected = demo->node_selected;
   stygian_mini_perf_init(&demo->perf, "node_graph_demo");
-  demo->perf.widget.renderer_name = "OpenGL";
+  demo->perf.widget.renderer_name = STYGIAN_NODE_GRAPH_RENDERER_NAME;
   demo->perf.widget.stress_mode = true;
   demo->perf.widget.idle_hz = 1000u;
   demo->perf.widget.active_hz = 1000u;
@@ -285,9 +295,9 @@ static int node_graph_wire_style_for_view(const NodeGraphDemo *demo) {
     return STYGIAN_WIRE_LINE;
   if (demo->benchmark_mode)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.visible_count > 28 || demo->graph.zoom < 1.2f)
+  if (demo->graph.visible_count > 20 || demo->graph.zoom < 1.45f)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.visible_count > 12 || demo->graph.zoom < 1.75f)
+  if (demo->graph.visible_count > 8 || demo->graph.zoom < 2.1f)
     return STYGIAN_WIRE_SHARP;
   return demo->graph.wire_style;
 }
@@ -338,7 +348,7 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
     return;
 
   selected = demo->node_selected[idx];
-  far_lod = (demo->graph.zoom < 0.14f || w < 26.0f || h < 18.0f);
+  far_lod = (demo->graph.zoom < 0.08f || w < 18.0f || h < 12.0f);
   body_r = selected ? 0.18f : 0.14f;
   body_g = selected ? 0.19f : 0.15f;
   body_b = selected ? 0.25f : 0.19f;
@@ -348,28 +358,28 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   header_b = selected ? 0.42f : 0.28f;
   header_a = 1.0f;
   header_h = h * 0.34f;
-  if (header_h < 10.0f)
-    header_h = 10.0f;
+  if (header_h < 4.0f)
+    header_h = 4.0f;
   if (header_h > 24.0f)
     header_h = 24.0f;
   header_pad_x = w * 0.08f;
-  if (header_pad_x < 3.0f)
-    header_pad_x = 3.0f;
+  if (header_pad_x < 1.5f)
+    header_pad_x = 1.5f;
   if (header_pad_x > 10.0f)
     header_pad_x = 10.0f;
   header_pad_y = header_h * 0.18f;
-  if (header_pad_y < 1.0f)
-    header_pad_y = 1.0f;
+  if (header_pad_y < 0.5f)
+    header_pad_y = 0.5f;
   if (header_pad_y > 4.0f)
     header_pad_y = 4.0f;
   label_size = header_h * 0.62f;
-  if (label_size < 6.0f)
-    label_size = 6.0f;
+  if (label_size < 3.5f)
+    label_size = 3.5f;
   if (label_size > 16.0f)
     label_size = 16.0f;
   radius = h * 0.11f;
-  if (radius < 3.0f)
-    radius = 3.0f;
+  if (radius < 1.5f)
+    radius = 1.5f;
   if (radius > 8.0f)
     radius = 8.0f;
 
@@ -504,7 +514,7 @@ int main(int argc, char **argv) {
       .width = 1280,
       .height = 720,
       .title = "Stygian Node Graph Demo",
-      .flags = STYGIAN_WINDOW_RESIZABLE | STYGIAN_WINDOW_OPENGL,
+      .flags = STYGIAN_NODE_GRAPH_WINDOW_FLAGS,
   };
   StygianWindow *window = stygian_window_create(&win_cfg);
   StygianConfig cfg;
@@ -538,7 +548,7 @@ int main(int argc, char **argv) {
   if (!window)
     return 1;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.backend = STYGIAN_BACKEND_OPENGL;
+  cfg.backend = STYGIAN_NODE_GRAPH_BACKEND;
   cfg.window = window;
   ctx = stygian_create(&cfg);
   if (!ctx) {

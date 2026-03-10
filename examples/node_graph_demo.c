@@ -283,9 +283,9 @@ static int node_graph_wire_style_for_view(const NodeGraphDemo *demo) {
     return STYGIAN_WIRE_LINE;
   if (demo->benchmark_mode)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.zoom < 0.55f)
+  if (demo->graph.zoom < 0.78f)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.zoom < 0.9f)
+  if (demo->graph.zoom < 1.08f)
     return STYGIAN_WIRE_SHARP;
   return demo->graph.wire_style;
 }
@@ -301,6 +301,7 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   float header_g;
   float header_b;
   float header_a;
+  float label_size;
   float radius;
   bool far_lod;
   bool medium_lod;
@@ -309,8 +310,8 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
     return;
 
   selected = demo->node_selected[idx];
-  far_lod = (demo->graph.zoom < 0.42f || w < 64.0f || h < 38.0f);
-  medium_lod = (!far_lod && (demo->graph.zoom < 0.68f || w < 92.0f));
+  far_lod = (demo->graph.zoom < 0.26f || w < 54.0f || h < 32.0f);
+  medium_lod = (!far_lod && (demo->graph.zoom < 0.46f || w < 74.0f));
   body_r = selected ? 0.18f : 0.14f;
   body_g = selected ? 0.19f : 0.15f;
   body_b = selected ? 0.25f : 0.19f;
@@ -319,6 +320,7 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   header_g = selected ? 0.31f : 0.22f;
   header_b = selected ? 0.42f : 0.28f;
   header_a = 1.0f;
+  label_size = demo->graph.zoom < 0.72f ? 13.0f : 16.0f;
   radius = far_lod ? 6.0f : 8.0f;
 
   stygian_rect_rounded(ctx, x, y, w, h, body_r, body_g, body_b, body_a,
@@ -337,7 +339,7 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
     return;
 
   stygian_text_span(ctx, demo->font, demo->node_title[idx],
-                    demo->node_title_len[idx], x + 10.0f, y + 4.0f, 16.0f,
+                    demo->node_title_len[idx], x + 10.0f, y + 4.0f, label_size,
                     0.9f, 0.92f, 0.96f, 1.0f);
 }
 
@@ -493,6 +495,8 @@ int main(int argc, char **argv) {
   if (demo.hero_shot_mode) {
     demo.show_perf = false;
     node_graph_set_hero_view(&demo);
+  } else {
+    node_graph_set_showcase_view(&demo);
   }
   demo.perf.widget.enabled = demo.show_perf;
   node_graph_apply_mode(&demo);
@@ -501,7 +505,8 @@ int main(int argc, char **argv) {
     unattended_bench = true;
     demo.show_perf = false;
     demo.perf.widget.enabled = false;
-    demo.camera_fitted = false;
+    if (!demo.camera_fitted)
+      node_graph_set_showcase_view(&demo);
     stygian_set_present_enabled(ctx, false);
     stygian_set_gpu_timing_enabled(ctx, false);
     stygian_set_output_icc_auto(ctx, false);

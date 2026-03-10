@@ -283,9 +283,9 @@ static int node_graph_wire_style_for_view(const NodeGraphDemo *demo) {
     return STYGIAN_WIRE_LINE;
   if (demo->benchmark_mode)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.zoom < 0.78f)
+  if (demo->graph.zoom < 1.05f)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.zoom < 1.08f)
+  if (demo->graph.zoom < 1.45f)
     return STYGIAN_WIRE_SHARP;
   return demo->graph.wire_style;
 }
@@ -301,17 +301,18 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   float header_g;
   float header_b;
   float header_a;
+  float header_h;
+  float header_pad_x;
+  float header_pad_y;
   float label_size;
   float radius;
   bool far_lod;
-  bool medium_lod;
 
   if (!ctx || !demo)
     return;
 
   selected = demo->node_selected[idx];
-  far_lod = (demo->graph.zoom < 0.26f || w < 54.0f || h < 32.0f);
-  medium_lod = (!far_lod && (demo->graph.zoom < 0.46f || w < 74.0f));
+  far_lod = (demo->graph.zoom < 0.14f || w < 26.0f || h < 18.0f);
   body_r = selected ? 0.18f : 0.14f;
   body_g = selected ? 0.19f : 0.15f;
   body_b = selected ? 0.25f : 0.19f;
@@ -320,26 +321,56 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   header_g = selected ? 0.31f : 0.22f;
   header_b = selected ? 0.42f : 0.28f;
   header_a = 1.0f;
-  label_size = demo->graph.zoom < 0.72f ? 13.0f : 16.0f;
-  radius = far_lod ? 6.0f : 8.0f;
+  header_h = h * 0.34f;
+  if (header_h < 10.0f)
+    header_h = 10.0f;
+  if (header_h > 24.0f)
+    header_h = 24.0f;
+  header_pad_x = w * 0.08f;
+  if (header_pad_x < 3.0f)
+    header_pad_x = 3.0f;
+  if (header_pad_x > 10.0f)
+    header_pad_x = 10.0f;
+  header_pad_y = header_h * 0.18f;
+  if (header_pad_y < 1.0f)
+    header_pad_y = 1.0f;
+  if (header_pad_y > 4.0f)
+    header_pad_y = 4.0f;
+  label_size = header_h * 0.62f;
+  if (label_size < 6.0f)
+    label_size = 6.0f;
+  if (label_size > 16.0f)
+    label_size = 16.0f;
+  radius = h * 0.11f;
+  if (radius < 3.0f)
+    radius = 3.0f;
+  if (radius > 8.0f)
+    radius = 8.0f;
 
   stygian_rect_rounded(ctx, x, y, w, h, body_r, body_g, body_b, body_a,
                        radius);
   if (far_lod) {
     if (selected) {
-      stygian_rect_rounded(ctx, x + 2.0f, y + 2.0f, w - 4.0f, 5.0f, 0.36f,
-                           0.62f, 1.0f, 0.95f, 2.5f);
+      float accent_pad = w * 0.04f;
+      float accent_h = h * 0.14f;
+      if (accent_pad < 1.0f)
+        accent_pad = 1.0f;
+      if (accent_h < 2.0f)
+        accent_h = 2.0f;
+      if (accent_h > 5.0f)
+        accent_h = 5.0f;
+      stygian_rect_rounded(ctx, x + accent_pad, y + accent_pad,
+                           w - accent_pad * 2.0f, accent_h, 0.36f, 0.62f,
+                           1.0f, 0.95f, accent_h * 0.5f);
     }
     return;
   }
 
-  stygian_rect_rounded(ctx, x, y, w, 24.0f, header_r, header_g, header_b,
+  stygian_rect_rounded(ctx, x, y, w, header_h, header_r, header_g, header_b,
                        header_a, radius);
-  if (medium_lod)
-    return;
-
   stygian_text_span(ctx, demo->font, demo->node_title[idx],
-                    demo->node_title_len[idx], x + 10.0f, y + 4.0f, label_size,
+                    demo->node_title_len[idx], x + header_pad_x,
+                    y + header_pad_y, label_size,
                     0.9f, 0.92f, 0.96f, 1.0f);
 }
 

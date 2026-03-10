@@ -1,5 +1,23 @@
 # Stygian vs Contemporary Native UI Libraries - Render Performance Comparison
 
+## Benchmark Lanes
+
+This material is deliberately split into more than one lane, because Stygian is not just another CPU-side widget builder.
+
+The lanes are:
+
+- **Stygian native lane**
+  - the main lane for understanding Stygian as a GPU-native SDF UI and tool runtime
+  - this is where replay, zero-upload static frames, real renderer cost, and backend behavior matter
+- **CPU builder lane**
+  - a narrower comparison for scene-build churn across Stygian and other libraries
+  - useful, but not the main verdict for what Stygian is designed to do
+- **future best-fit lane**
+  - each library measured in the environment that best matches its design
+  - useful for practical stack-choice comparisons rather than strict apples-to-apples methodology
+
+If you flatten all of those into one scoreboard, the result is garbage.
+
 ## Methodology
 
 - Harness: `examples/perf_pathological_suite.c`
@@ -30,6 +48,8 @@ Read the results this way:
 - lead with Stygian's native GPU-path results
 - use the CPU-builder lane as a secondary authoring-cost comparison
 - remember that a stronger dGPU will likely help Stygian more than it helps a CPU-only builder, but the exact gain still has to be measured
+
+Stygian also sits in a relatively thin category. Most comparison libraries are immediate-mode CPU builders, renderer-agnostic layout systems, or lower-level platform/tool layers. Very few projects are trying to be a GPU-native, SDF-first, invalidation-driven UI/runtime stack for C-based desktop tooling.
 
 There is now a separate Windows comparison lane in [benchmarks/comparison/README.md](../../benchmarks/comparison/README.md). That lane is useful, but it is still mixed-mode by design:
 
@@ -134,6 +154,7 @@ Scene characteristics:
 - The CPU Builder section is a secondary apples-to-apples lane for Stygian authoring cost versus the other headless builders.
 - Nuklear remains the fastest lightweight CPU-builder lane in this matrix.
 - Stygian's differentiator is not "highest static FPS in every harness." It is the combination of data-driven immediate authoring, persistent scene/state backing, replay/skip paths, dirty upload accounting, GPU-native SDF rendering, and a real renderer path with one draw call.
+- Future public comparisons should add a Vulkan-native Stygian lane and a separate best-fit lane instead of pretending every stack is solving the same problem.
 
 ### Latest Sanity Measurement
 
@@ -203,6 +224,8 @@ The remaining gap in this document is end-to-end renderer data for the non-Stygi
 
 Recommended additions:
 
+- Stygian Vulkan baselines beside the current OpenGL-native path
+- a best-fit comparison lane where each library runs in the environment that best matches its design
 - p95 frame time
 - CPU package and GPU utilization snapshots
 - upload bytes over time graph

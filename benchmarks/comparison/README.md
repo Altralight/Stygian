@@ -2,6 +2,8 @@
 
 This directory contains the current Windows comparison harnesses for Stygian and several native UI libraries.
 
+The important thing to keep straight: this harness is only one lane in the broader Stygian benchmark story. It is useful for CPU-side scene churn and for capturing Stygian's native modes in the same scene matrix, but it is not the whole verdict on a GPU-native SDF runtime.
+
 Scope:
 - Windows-only build lane for now
 - Headless CPU-side scene generation for external libraries
@@ -20,6 +22,7 @@ What this harness is good for:
 - comparing scene build cost without platform backends muddying the water
 - checking command growth and raw CPU overhead across libraries
 - getting repeatable CSV output we can stick into the perf docs later
+- showing Stygian native modes alongside the CPU-builder lane without pretending they are the same job
 
 What this harness is not:
 - a GPU renderer benchmark
@@ -31,6 +34,7 @@ Important:
 - `stygian` is measured in `cpu-authoring-full-build`, `raw-gpu-resident`, and `eval-only-replay` modes
 - `cpu-authoring-full-build` is the CPU authoring comparison lane for Stygian in this harness
 - `raw-gpu-resident` and `eval-only-replay` are useful Stygian-native context, not pure CPU-builder rows
+- this is not the place to pretend Stygian is "just another CPU UI library"
 - Clay's graph lane is node-heavy but wire-light in this headless setup. That's a harness limitation, not a serious renderer claim.
 - `dvui` is currently pinned to Zig `0.14.1` in this lane. The harness does not build cleanly on Zig `0.15.2` yet, so the build script falls back to an official `0.14.1` toolchain for that target.
 - The `dvui` harness forces the fetched source onto its stb text path for this headless lane. That keeps the benchmark about scene churn instead of freetype toolchain plumbing.
@@ -75,5 +79,7 @@ Output:
 - `summary.log` also includes `STYGIANDETAIL` lines with scene, average element count, and upload bytes for the Stygian runs
 
 Next steps:
+- add a Stygian Vulkan lane beside the current OpenGL-native measurements
+- add a best-fit comparison lane where each library is measured in the environment that best matches its design
 - add Linux/macOS build runners once the base lane is stable
 - add more Rust/Zig harnesses after the methodology settles down

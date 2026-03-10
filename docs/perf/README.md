@@ -16,9 +16,13 @@ Current local proof artifacts live in:
 
 Read these in this order:
 
+- `benchmark_comparison.md` -> `Benchmark Lanes`
 - `benchmark_comparison.md` -> `Current Stygian Baseline`
 - `benchmarks/comparison/latest_results.md` -> `Stygian Native Modes`
 - `benchmarks/comparison/latest_results.md` -> `CPU Builder Rows`
 
 Start with the native sections if you want to understand what Stygian is actually doing on the GPU.
-Use the CPU Builder section after that for the cross-library scene-build lane.
+Use the CPU Builder section after that for the narrower cross-library scene-build lane.
+
+Stygian is best read here as a GPU-native SDF UI and tool runtime.
+That means the CPU-builder lane is useful, but it is not the crown-jewel measurement for the project.

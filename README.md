@@ -4,7 +4,7 @@
 [![macOS](https://img.shields.io/github/actions/workflow/status/StygianFade/Stygian/stygian-macos.yml?branch=main&label=macOS)](https://github.com/StygianFade/Stygian/actions/workflows/stygian-macos.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-GPU-accelerated SDF UI library for C23. Single draw call. Invalidation-driven. Cross-platform.
+GPU-accelerated SDF UI and tool runtime for C23. Single draw call. Invalidation-driven. Cross-platform.
 
 ## What It Is
 
@@ -100,9 +100,15 @@ The Windows comparison harness, scene coverage, and toolchain caveats live in [b
 
 Read the benchmark material in this order:
 
-- `docs/perf/benchmark_comparison.md` for the current Stygian baseline
+- `docs/perf/benchmark_comparison.md` for benchmark lanes, hardware context, and the current Stygian baseline
 - `benchmarks/comparison/latest_results.md` -> `Stygian Native Modes` for Stygian's native GPU-path measurements
-- `benchmarks/comparison/latest_results.md` -> `CPU Builder Rows` for the cross-library CPU authoring lane
+- `benchmarks/comparison/latest_results.md` -> `CPU Builder Rows` for the narrower cross-library CPU authoring lane
+
+The important distinction is simple:
+
+- the CPU-builder lane is not Stygian's home field
+- the native GPU-path lane is
+- Stygian should be judged primarily as a GPU-native SDF tool runtime, not as a lightweight CPU command builder
 
 ## Screenshots
 

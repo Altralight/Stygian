@@ -2610,20 +2610,38 @@ static int text_xy_to_index_layout(const TextAreaLayout *layout,
 static const TextAreaLine *
 text_area_layout_line_for_index(const TextAreaLayout *layout, int idx,
                                 uint32_t *out_line_index) {
+  uint32_t lo;
+  uint32_t hi;
   if (!layout || layout->count == 0u)
     return NULL;
-  for (uint32_t i = 0u; i < layout->count; i++) {
-    const TextAreaLine *line = &layout->lines[i];
-    if (idx >= line->idx_start && idx <= line->idx_end) {
-      if (out_line_index)
-        *out_line_index = i;
-      return line;
-    }
-  }
   if (idx <= layout->lines[0].idx_start) {
     if (out_line_index)
       *out_line_index = 0u;
     return &layout->lines[0];
+  }
+  if (idx >= layout->lines[layout->count - 1u].idx_end) {
+    if (out_line_index)
+      *out_line_index = layout->count - 1u;
+    return &layout->lines[layout->count - 1u];
+  }
+  lo = 0u;
+  hi = layout->count;
+  // Wrapped text can produce a lot of lines. Linear scans here were just
+  // wasting time every time the caret moved.
+  while (lo < hi) {
+    uint32_t mid = lo + ((hi - lo) / 2u);
+    const TextAreaLine *line = &layout->lines[mid];
+    if (idx < line->idx_start) {
+      hi = mid;
+      continue;
+    }
+    if (idx > line->idx_end) {
+      lo = mid + 1u;
+      continue;
+    }
+    if (out_line_index)
+      *out_line_index = mid;
+    return line;
   }
   if (out_line_index)
     *out_line_index = layout->count - 1u;

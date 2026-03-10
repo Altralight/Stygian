@@ -2800,7 +2800,7 @@ StygianElement stygian_element(StygianContext *ctx) {
 StygianElement stygian_element_transient(StygianContext *ctx) {
   uint32_t id;
   StygianElement e = stygian_element_internal(ctx, &id);
-  if (e) {
+  if (e && !ctx->suppress_element_writes) {
     ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
     ctx->transient_count++;
   }
@@ -3619,15 +3619,14 @@ void stygian_rect_rounded(StygianContext *ctx, float x, float y, float w,
                           float h, float r, float g, float b, float a,
                           float radius) {
   uint32_t id;
-  StygianElement e = stygian_element_internal(ctx, &id);
-  if (!e)
+  if (!stygian_element_internal(ctx, &id))
     return;
-  ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
-  ctx->transient_count++;
 
   if (ctx->suppress_element_writes)
     return;
 
+  ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
+  ctx->transient_count++;
   ctx->soa.hot[id].x = x;
   ctx->soa.hot[id].y = y;
   ctx->soa.hot[id].w = w;
@@ -3647,8 +3646,9 @@ void stygian_rect_rounded(StygianContext *ctx, float x, float y, float w,
 void stygian_line(StygianContext *ctx, float x1, float y1, float x2, float y2,
                   float thickness, float r, float g, float b, float a) {
   uint32_t id;
-  StygianElement e = stygian_element_internal(ctx, &id);
-  if (!e)
+  if (!stygian_element_internal(ctx, &id))
+    return;
+  if (ctx->suppress_element_writes)
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3660,9 +3660,15 @@ void stygian_line(StygianContext *ctx, float x1, float y1, float x2, float y2,
   float maxx = (x1 > x2 ? x1 : x2) + pad;
   float maxy = (y1 > y2 ? y1 : y2) + pad;
 
-  stygian_set_bounds(ctx, e, minx, miny, maxx - minx, maxy - miny);
-  stygian_set_color(ctx, e, r, g, b, a);
-  stygian_set_type(ctx, e, STYGIAN_LINE);
+  ctx->soa.hot[id].x = minx;
+  ctx->soa.hot[id].y = miny;
+  ctx->soa.hot[id].w = maxx - minx;
+  ctx->soa.hot[id].h = maxy - miny;
+  ctx->soa.hot[id].color[0] = r;
+  ctx->soa.hot[id].color[1] = g;
+  ctx->soa.hot[id].color[2] = b;
+  ctx->soa.hot[id].color[3] = a;
+  ctx->soa.hot[id].type = STYGIAN_LINE;
 
   // Encode endpoints in Absolute World Coordinates
   // SoA write: UV → appearance, radius → appearance
@@ -3672,7 +3678,6 @@ void stygian_line(StygianContext *ctx, float x1, float y1, float x2, float y2,
     ctx->soa.appearance[id].uv[2] = x2;
     ctx->soa.appearance[id].uv[3] = y2;
     ctx->soa.appearance[id].radius[0] = thickness * 0.5f;
-    stygian_mark_soa_appearance_dirty(ctx, id);
   }
 }
 
@@ -3682,8 +3687,9 @@ void stygian_bezier(StygianContext *ctx, float x1, float y1, float cx, float cy,
                     float x2, float y2, float thickness, float r, float g,
                     float b, float a) {
   uint32_t id;
-  StygianElement e = stygian_element_internal(ctx, &id);
-  if (!e)
+  if (!stygian_element_internal(ctx, &id))
+    return;
+  if (ctx->suppress_element_writes)
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3699,9 +3705,15 @@ void stygian_bezier(StygianContext *ctx, float x1, float y1, float cx, float cy,
   float maxx = max3f_x + pad;
   float maxy = max3f_y + pad;
 
-  stygian_set_bounds(ctx, e, minx, miny, maxx - minx, maxy - miny);
-  stygian_set_color(ctx, e, r, g, b, a);
-  stygian_set_type(ctx, e, STYGIAN_BEZIER);
+  ctx->soa.hot[id].x = minx;
+  ctx->soa.hot[id].y = miny;
+  ctx->soa.hot[id].w = maxx - minx;
+  ctx->soa.hot[id].h = maxy - miny;
+  ctx->soa.hot[id].color[0] = r;
+  ctx->soa.hot[id].color[1] = g;
+  ctx->soa.hot[id].color[2] = b;
+  ctx->soa.hot[id].color[3] = a;
+  ctx->soa.hot[id].type = STYGIAN_BEZIER;
 
   // Pack control points in Absolute World Coordinates: UV = (start, end),
   // _reserved[0,1] = control point
@@ -3716,7 +3728,6 @@ void stygian_bezier(StygianContext *ctx, float x1, float y1, float cx, float cy,
     ctx->soa.appearance[id].control_points[2] = 0.0f;
     ctx->soa.appearance[id].control_points[3] = 0.0f;
     ctx->soa.appearance[id].radius[0] = thickness * 0.5f;
-    stygian_mark_soa_appearance_dirty(ctx, id);
   }
 }
 
@@ -3727,8 +3738,9 @@ void stygian_wire(StygianContext *ctx, float x1, float y1, float cp1x,
                   float cp1y, float cp2x, float cp2y, float x2, float y2,
                   float thickness, float r, float g, float b, float a) {
   uint32_t id;
-  StygianElement e = stygian_element_internal(ctx, &id);
-  if (!e)
+  if (!stygian_element_internal(ctx, &id))
+    return;
+  if (ctx->suppress_element_writes)
     return;
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
@@ -3771,9 +3783,15 @@ void stygian_wire(StygianContext *ctx, float x1, float y1, float cp1x,
     maxy = y2;
   maxy += pad;
 
-  stygian_set_bounds(ctx, e, minx, miny, maxx - minx, maxy - miny);
-  stygian_set_color(ctx, e, r, g, b, a);
-  stygian_set_type(ctx, e, STYGIAN_WIRE);
+  ctx->soa.hot[id].x = minx;
+  ctx->soa.hot[id].y = miny;
+  ctx->soa.hot[id].w = maxx - minx;
+  ctx->soa.hot[id].h = maxy - miny;
+  ctx->soa.hot[id].color[0] = r;
+  ctx->soa.hot[id].color[1] = g;
+  ctx->soa.hot[id].color[2] = b;
+  ctx->soa.hot[id].color[3] = a;
+  ctx->soa.hot[id].type = STYGIAN_WIRE;
 
   // Pack control points in Absolute World Coordinates:
   // UV: (A, D), _reserved[0,1]: B, _reserved[2,3]: C
@@ -3788,22 +3806,20 @@ void stygian_wire(StygianContext *ctx, float x1, float y1, float cp1x,
     ctx->soa.appearance[id].control_points[2] = cp2x;
     ctx->soa.appearance[id].control_points[3] = cp2y;
     ctx->soa.appearance[id].radius[0] = thickness * 0.5f;
-    stygian_mark_soa_appearance_dirty(ctx, id);
   }
 }
 
 void stygian_image(StygianContext *ctx, StygianTexture tex, float x, float y,
                    float w, float h) {
   uint32_t id;
-  StygianElement e = stygian_element_internal(ctx, &id);
-  if (!e)
+  if (!stygian_element_internal(ctx, &id))
     return;
-  ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
-  ctx->transient_count++;
 
   if (ctx->suppress_element_writes)
     return;
 
+  ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
+  ctx->transient_count++;
   ctx->soa.hot[id].x = x;
   ctx->soa.hot[id].y = y;
   ctx->soa.hot[id].w = w;
@@ -3825,15 +3841,14 @@ void stygian_image_uv(StygianContext *ctx, StygianTexture tex, float x, float y,
                       float w, float h, float u0, float v0, float u1,
                       float v1) {
   uint32_t id;
-  StygianElement e = stygian_element_internal(ctx, &id);
-  if (!e)
+  if (!stygian_element_internal(ctx, &id))
     return;
-  ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
-  ctx->transient_count++;
 
   if (ctx->suppress_element_writes)
     return;
 
+  ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
+  ctx->transient_count++;
   ctx->soa.hot[id].x = x;
   ctx->soa.hot[id].y = y;
   ctx->soa.hot[id].w = w;
@@ -4232,12 +4247,12 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
   if (allocated == 0u)
     return 0;
 
+  if (ctx->suppress_element_writes)
+    return batch_stack[0];
+
   for (uint32_t i = 0u; i < allocated; i++)
     ctx->soa.hot[slot_stack[i]].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count += allocated;
-
-  if (ctx->suppress_element_writes)
-    return batch_stack[0];
 
   for (size_t i = 0; i < text_len && slot < allocated; i++) {
     unsigned char cp = (unsigned char)str[i];
@@ -4374,13 +4389,13 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
   if (allocated == 0)
     return 0;
 
-  // Mark all batch elements as transient upfront
+  if (ctx->suppress_element_writes)
+    return batch_stack[0];
+
+  // Mark all batch elements as transient upfront.
   for (uint32_t i = 0; i < allocated; i++)
     ctx->soa.hot[slot_stack[i]].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count += allocated;
-
-  if (ctx->suppress_element_writes)
-    return batch_stack[0];
 
   // Fill loop — direct SoA writes, no setter calls
   uint32_t slot = 0; // next batch slot to consume

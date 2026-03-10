@@ -295,9 +295,9 @@ static int node_graph_wire_style_for_view(const NodeGraphDemo *demo) {
     return STYGIAN_WIRE_LINE;
   if (demo->benchmark_mode)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.visible_count > 20 || demo->graph.zoom < 1.45f)
+  if (demo->graph.visible_count > 12 || demo->graph.zoom < 1.85f)
     return STYGIAN_WIRE_LINE;
-  if (demo->graph.visible_count > 8 || demo->graph.zoom < 2.1f)
+  if (demo->graph.visible_count > 4 || demo->graph.zoom < 2.6f)
     return STYGIAN_WIRE_SHARP;
   return demo->graph.wire_style;
 }
@@ -343,12 +343,13 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   float label_size;
   float radius;
   bool far_lod;
+  bool text_too_small;
 
   if (!ctx || !demo)
     return;
 
   selected = demo->node_selected[idx];
-  far_lod = (demo->graph.zoom < 0.08f || w < 18.0f || h < 12.0f);
+  far_lod = (demo->graph.zoom < 0.06f || w < 16.0f || h < 10.0f);
   body_r = selected ? 0.18f : 0.14f;
   body_g = selected ? 0.19f : 0.15f;
   body_b = selected ? 0.25f : 0.19f;
@@ -358,30 +359,11 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
   header_b = selected ? 0.42f : 0.28f;
   header_a = 1.0f;
   header_h = h * 0.34f;
-  if (header_h < 4.0f)
-    header_h = 4.0f;
-  if (header_h > 24.0f)
-    header_h = 24.0f;
   header_pad_x = w * 0.08f;
-  if (header_pad_x < 1.5f)
-    header_pad_x = 1.5f;
-  if (header_pad_x > 10.0f)
-    header_pad_x = 10.0f;
   header_pad_y = header_h * 0.18f;
-  if (header_pad_y < 0.5f)
-    header_pad_y = 0.5f;
-  if (header_pad_y > 4.0f)
-    header_pad_y = 4.0f;
   label_size = header_h * 0.62f;
-  if (label_size < 3.5f)
-    label_size = 3.5f;
-  if (label_size > 16.0f)
-    label_size = 16.0f;
   radius = h * 0.11f;
-  if (radius < 1.5f)
-    radius = 1.5f;
-  if (radius > 8.0f)
-    radius = 8.0f;
+  text_too_small = (label_size < 7.0f || header_h < 8.0f || w < 52.0f);
 
   stygian_rect_rounded(ctx, x, y, w, h, body_r, body_g, body_b, body_a,
                        radius);
@@ -389,12 +371,6 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
     if (selected) {
       float accent_pad = w * 0.04f;
       float accent_h = h * 0.14f;
-      if (accent_pad < 1.0f)
-        accent_pad = 1.0f;
-      if (accent_h < 2.0f)
-        accent_h = 2.0f;
-      if (accent_h > 5.0f)
-        accent_h = 5.0f;
       stygian_rect_rounded(ctx, x + accent_pad, y + accent_pad,
                            w - accent_pad * 2.0f, accent_h, 0.36f, 0.62f,
                            1.0f, 0.95f, accent_h * 0.5f);
@@ -404,6 +380,9 @@ static void draw_pretty_node_lod(StygianContext *ctx, const NodeGraphDemo *demo,
 
   stygian_rect_rounded(ctx, x, y, w, header_h, header_r, header_g, header_b,
                        header_a, radius);
+  if (text_too_small)
+    return;
+
   stygian_text_span(ctx, demo->font, demo->node_title[idx],
                     demo->node_title_len[idx], x + header_pad_x,
                     y + header_pad_y, label_size,

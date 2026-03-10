@@ -3588,12 +3588,24 @@ void stygian_end_metaball_group(StygianContext *ctx, StygianElement group) {
 StygianElement stygian_rect(StygianContext *ctx, float x, float y, float w,
                             float h, float r, float g, float b, float a) {
   StygianElement e = stygian_element(ctx);
+  uint32_t id;
   if (!e)
     return 0;
 
-  stygian_set_bounds(ctx, e, x, y, w, h);
-  stygian_set_color(ctx, e, r, g, b, a);
-  stygian_set_type(ctx, e, STYGIAN_RECT);
+  if (ctx->suppress_element_writes)
+    return e;
+  if (!stygian_resolve_element_slot(ctx, e, &id))
+    return 0;
+
+  ctx->soa.hot[id].x = x;
+  ctx->soa.hot[id].y = y;
+  ctx->soa.hot[id].w = w;
+  ctx->soa.hot[id].h = h;
+  ctx->soa.hot[id].color[0] = r;
+  ctx->soa.hot[id].color[1] = g;
+  ctx->soa.hot[id].color[2] = b;
+  ctx->soa.hot[id].color[3] = a;
+  ctx->soa.hot[id].type = STYGIAN_RECT;
   return e;
 }
 
@@ -3610,10 +3622,22 @@ void stygian_rect_rounded(StygianContext *ctx, float x, float y, float w,
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
 
-  stygian_set_bounds(ctx, e, x, y, w, h);
-  stygian_set_color(ctx, e, r, g, b, a);
-  stygian_set_radius(ctx, e, radius, radius, radius, radius);
-  stygian_set_type(ctx, e, STYGIAN_RECT);
+  if (ctx->suppress_element_writes)
+    return;
+
+  ctx->soa.hot[id].x = x;
+  ctx->soa.hot[id].y = y;
+  ctx->soa.hot[id].w = w;
+  ctx->soa.hot[id].h = h;
+  ctx->soa.hot[id].color[0] = r;
+  ctx->soa.hot[id].color[1] = g;
+  ctx->soa.hot[id].color[2] = b;
+  ctx->soa.hot[id].color[3] = a;
+  ctx->soa.hot[id].type = STYGIAN_RECT;
+  ctx->soa.appearance[id].radius[0] = radius;
+  ctx->soa.appearance[id].radius[1] = radius;
+  ctx->soa.appearance[id].radius[2] = radius;
+  ctx->soa.appearance[id].radius[3] = radius;
 }
 
 // SDF line segment from (x1,y1) to (x2,y2) with given thickness
@@ -3786,10 +3810,24 @@ void stygian_image(StygianContext *ctx, StygianTexture tex, float x, float y,
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
 
-  stygian_set_bounds(ctx, e, x, y, w, h);
-  stygian_set_color(ctx, e, 1, 1, 1, 1);
-  stygian_set_texture(ctx, e, tex, 0, 0, 1, 1);
-  stygian_set_type(ctx, e, STYGIAN_TEXTURE);
+  if (ctx->suppress_element_writes)
+    return;
+
+  ctx->soa.hot[id].x = x;
+  ctx->soa.hot[id].y = y;
+  ctx->soa.hot[id].w = w;
+  ctx->soa.hot[id].h = h;
+  ctx->soa.hot[id].color[0] = 1.0f;
+  ctx->soa.hot[id].color[1] = 1.0f;
+  ctx->soa.hot[id].color[2] = 1.0f;
+  ctx->soa.hot[id].color[3] = 1.0f;
+  ctx->soa.hot[id].type = STYGIAN_TEXTURE;
+  if (stygian_resolve_texture_slot(ctx, tex, NULL, &ctx->soa.hot[id].texture_id)) {
+    ctx->soa.appearance[id].uv[0] = 0.0f;
+    ctx->soa.appearance[id].uv[1] = 0.0f;
+    ctx->soa.appearance[id].uv[2] = 1.0f;
+    ctx->soa.appearance[id].uv[3] = 1.0f;
+  }
 }
 
 void stygian_image_uv(StygianContext *ctx, StygianTexture tex, float x, float y,
@@ -3805,10 +3843,24 @@ void stygian_image_uv(StygianContext *ctx, StygianTexture tex, float x, float y,
   ctx->soa.hot[id].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count++;
 
-  stygian_set_bounds(ctx, e, x, y, w, h);
-  stygian_set_color(ctx, e, 1, 1, 1, 1);
-  stygian_set_texture(ctx, e, tex, u0, v0, u1, v1);
-  stygian_set_type(ctx, e, STYGIAN_TEXTURE);
+  if (ctx->suppress_element_writes)
+    return;
+
+  ctx->soa.hot[id].x = x;
+  ctx->soa.hot[id].y = y;
+  ctx->soa.hot[id].w = w;
+  ctx->soa.hot[id].h = h;
+  ctx->soa.hot[id].color[0] = 1.0f;
+  ctx->soa.hot[id].color[1] = 1.0f;
+  ctx->soa.hot[id].color[2] = 1.0f;
+  ctx->soa.hot[id].color[3] = 1.0f;
+  ctx->soa.hot[id].type = STYGIAN_TEXTURE;
+  if (stygian_resolve_texture_slot(ctx, tex, NULL, &ctx->soa.hot[id].texture_id)) {
+    ctx->soa.appearance[id].uv[0] = u0;
+    ctx->soa.appearance[id].uv[1] = v0;
+    ctx->soa.appearance[id].uv[2] = u1;
+    ctx->soa.appearance[id].uv[3] = v1;
+  }
 }
 
 // ============================================================================
@@ -4124,15 +4176,63 @@ static bool stygian_text_span_is_plain_ascii(const char *str, size_t text_len) {
   return true;
 }
 
+static uint32_t stygian_text_span_ascii_glyph_count(const char *str,
+                                                    size_t text_len) {
+  uint32_t count = 0u;
+  for (size_t i = 0; i < text_len; i++) {
+    unsigned char cp = (unsigned char)str[i];
+    if (cp == '\r' || cp == '\n')
+      continue;
+    count++;
+  }
+  return count;
+}
+
+static uint32_t stygian_text_span_glyph_count(StygianContext *ctx,
+                                              const StygianFontAtlas *f,
+                                              const char *str,
+                                              size_t text_len) {
+  uint32_t count = 0u;
+  size_t cursor = 0u;
+
+  for (;;) {
+    size_t cp_start = cursor;
+    uint32_t cp = 0u;
+    if (!stygian_utf8_next(str, text_len, &cursor, &cp))
+      break;
+    if (cp == '\r' || cp == '\n')
+      continue;
+
+    if (cp == ':') {
+      char emoji_id[128];
+      size_t emoji_after = 0u;
+      if (stygian_try_parse_shortcode(str, text_len, cp_start, emoji_id,
+                                      sizeof(emoji_id), &emoji_after) &&
+          stygian_inline_emoji_has_entry(ctx, emoji_id)) {
+        count++;
+        cursor = emoji_after;
+        continue;
+      }
+    }
+
+    if (stygian_font_get_glyph(f, cp) || cp <= 255u ||
+        stygian_font_get_glyph(f, (uint32_t)'?')) {
+      count++;
+    }
+  }
+
+  return count;
+}
+
 static StygianElement stygian_text_span_ascii(StygianContext *ctx,
                                               StygianFontAtlas *f,
                                               const char *str,
                                               size_t text_len, float x,
                                               float y, float size, float r,
                                               float g, float b, float a) {
+  uint32_t glyph_count = stygian_text_span_ascii_glyph_count(str, text_len);
   uint32_t max_glyphs =
-      (uint32_t)(text_len < STYGIAN_TEXT_MAX_BATCH ? text_len
-                                                   : STYGIAN_TEXT_MAX_BATCH);
+      glyph_count < STYGIAN_TEXT_MAX_BATCH ? glyph_count : STYGIAN_TEXT_MAX_BATCH;
   StygianElement batch_stack[STYGIAN_TEXT_MAX_BATCH];
   uint32_t slot_stack[STYGIAN_TEXT_MAX_BATCH];
   uint32_t allocated =
@@ -4147,6 +4247,9 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
   for (uint32_t i = 0u; i < allocated; i++)
     ctx->soa.hot[slot_stack[i]].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count += allocated;
+
+  if (ctx->suppress_element_writes)
+    return batch_stack[0];
 
   for (size_t i = 0; i < text_len && slot < allocated; i++) {
     unsigned char cp = (unsigned char)str[i];
@@ -4192,13 +4295,11 @@ static StygianElement stygian_text_span_ascii(StygianContext *ctx,
       ctx->soa.hot[id].color[3] = a;
       ctx->soa.hot[id].type = STYGIAN_TEXT;
       ctx->soa.hot[id].texture_id = f->texture_backend_id;
-      stygian_mark_soa_hot_dirty(ctx, id);
 
       ctx->soa.appearance[id].uv[0] = glyph->u0;
       ctx->soa.appearance[id].uv[1] = glyph->v0;
       ctx->soa.appearance[id].uv[2] = glyph->u1;
       ctx->soa.appearance[id].uv[3] = glyph->v1;
-      stygian_mark_soa_appearance_dirty(ctx, id);
     }
 
     if ((i + 1u) < text_len) {
@@ -4272,11 +4373,11 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
     return stygian_text_span_ascii(ctx, f, str, text_len, x, y, size, r, g, b,
                                    a);
 
-// Upper-bound element count: at most 1 element per byte (ASCII worst case).
-// Cap to stack-friendly size; fall back to single alloc for huge strings.
+  // Byte count is a lousy proxy here. Emoji shortcodes and UTF-8 inflate the
+  // batch for no reason, then replay gets stuck walking that junk.
+  uint32_t glyph_count = stygian_text_span_glyph_count(ctx, f, str, text_len);
   uint32_t max_glyphs =
-      (uint32_t)(text_len < STYGIAN_TEXT_MAX_BATCH ? text_len
-                                                   : STYGIAN_TEXT_MAX_BATCH);
+      glyph_count < STYGIAN_TEXT_MAX_BATCH ? glyph_count : STYGIAN_TEXT_MAX_BATCH;
 
   StygianElement batch_stack[STYGIAN_TEXT_MAX_BATCH];
   uint32_t slot_stack[STYGIAN_TEXT_MAX_BATCH];
@@ -4289,6 +4390,9 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
   for (uint32_t i = 0; i < allocated; i++)
     ctx->soa.hot[slot_stack[i]].flags |= STYGIAN_FLAG_TRANSIENT;
   ctx->transient_count += allocated;
+
+  if (ctx->suppress_element_writes)
+    return batch_stack[0];
 
   // Fill loop — direct SoA writes, no setter calls
   uint32_t slot = 0; // next batch slot to consume
@@ -4343,13 +4447,11 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
           ctx->soa.hot[id].color[3] = a;
           ctx->soa.hot[id].type = STYGIAN_TEXTURE;
           ctx->soa.hot[id].texture_id = emoji_backend_tex;
-          stygian_mark_soa_hot_dirty(ctx, id);
 
           ctx->soa.appearance[id].uv[0] = 0.0f;
           ctx->soa.appearance[id].uv[1] = 0.0f;
           ctx->soa.appearance[id].uv[2] = 1.0f;
           ctx->soa.appearance[id].uv[3] = 1.0f;
-          stygian_mark_soa_appearance_dirty(ctx, id);
         }
 
         cursor = emoji_after;
@@ -4375,7 +4477,8 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
       first = e;
 
     if (!ctx->suppress_element_writes) {
-      // Direct SoA fill — hot
+      // These ids just came out of batch alloc, so re-marking them dirty per
+      // glyph is wasted work.
       ctx->soa.hot[id].x = cursor_x + offset_x;
       ctx->soa.hot[id].y = cursor_y + offset_y;
       ctx->soa.hot[id].w = glyph_w;
@@ -4386,14 +4489,11 @@ StygianElement stygian_text_span(StygianContext *ctx, StygianFont font,
       ctx->soa.hot[id].color[3] = a;
       ctx->soa.hot[id].type = STYGIAN_TEXT;
       ctx->soa.hot[id].texture_id = f->texture_backend_id;
-      stygian_mark_soa_hot_dirty(ctx, id);
 
-      // Direct SoA fill — appearance (glyph UVs)
       ctx->soa.appearance[id].uv[0] = glyph->u0;
       ctx->soa.appearance[id].uv[1] = glyph->v0;
       ctx->soa.appearance[id].uv[2] = glyph->u1;
       ctx->soa.appearance[id].uv[3] = glyph->v1;
-      stygian_mark_soa_appearance_dirty(ctx, id);
     }
 
     // Kerning lookahead

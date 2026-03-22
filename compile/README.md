@@ -32,9 +32,9 @@ Optional quick tests:
   `compile\windows\build_quickwindow_capture_smoke_vk.bat`
   (v1 records video via Vulkan readback; currently synchronous and lower-throughput)
 - Editor bootstrap (OpenGL):
-  `compile\windows\build_stygian_editor_bootstrap.bat`
+  `editor\compile\windows\build_stygian_editor_bootstrap.bat`
 - Editor bootstrap (Vulkan):
-  `compile\windows\build_stygian_editor_bootstrap_vk.bat`
+  `editor\compile\windows\build_stygian_editor_bootstrap_vk.bat`
 - All quick smoke targets: `compile\windows\build_quick_smoke.bat`
 
 Borderless maximize on Windows is work-area maximize (taskbar remains visible),
@@ -102,6 +102,18 @@ For quickwindow:
 - Capture MF writer init now retries with hardware transforms on/off and null
   attributes for broader machine compatibility.
 - Quick smoke group: `powershell -File compile/run.ps1 -Group quick_smoke`
+- Editor hardening core group:
+  `powershell -File compile/run.ps1 -Group editor_hardening_core`
+- Editor quick checkpoint group:
+  `powershell -File compile/run.ps1 -Group editor_quick_checkpoint`
+- Editor release gate group:
+  `powershell -File compile/run.ps1 -Group editor_release_gate`
+
+Editor-local wrappers (outputs stay under `editor/build/windows/`):
+
+- `editor\compile\windows\build_stygian_editor_hardening_core.bat`
+- `editor\compile\windows\build_stygian_editor_quick_checkpoint.bat`
+- `editor\compile\windows\build_stygian_editor_release_gate.bat`
 - Unified Windows target: `powershell -File compile/run.ps1 -Target text_editor_mini`
 - Unified Windows group: `powershell -File compile/run.ps1 -Group mini_apps_all`
 - Linux/macOS target: `compile/run.sh --target text_editor_mini`
@@ -110,6 +122,15 @@ For quickwindow:
 - Direct Windows runner group: `powershell -File compile/windows/build.ps1 -Group mini_apps_all`
 - Linux target: `compile/linux/build.sh text_editor_mini`
 - macOS target: `compile/macos/build.sh text_editor_mini`
+
+Editor app entry sources can also live outside `examples/`; the Stygian editor
+bootstrap now builds from `editor/apps/`.
+
+Editor hardening note:
+
+- `editor_quick_checkpoint` is the shortest useful editor checkpoint for frequent local loops.
+- `editor_hardening_core` is the fast editor gate for daily iteration.
+- `editor_release_gate` is the heavier gate before declaring a milestone stable.
 
 ## Add Your Own Example
 

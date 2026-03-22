@@ -54,7 +54,7 @@ int main(void) {
   stygian_set_vsync(ctx, false);
 
   StygianFont font =
-      stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+      stygian_get_default_font(ctx);
   StygianMiniPerfHarness perf;
   char editor_buffer[32768];
   StygianTextArea editor_state;

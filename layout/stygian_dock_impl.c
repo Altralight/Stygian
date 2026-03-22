@@ -549,8 +549,8 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
     }
 
     // Render tab bar background
-    stygian_rect(ctx, node->x, node->y, node->w, dock->tab_height, 0.12f, 0.12f,
-                 0.12f, 1.0f);
+    stygian_rect(ctx, node->x, node->y, node->w, dock->tab_height, 0.08f, 0.10f,
+                 0.13f, 1.0f);
 
     // Render tabs
     float tab_x = node->x + 2.0f;
@@ -571,12 +571,19 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
       bool active = (i == node->active_panel);
 
       // Tab background
-      float r = active ? 0.2f : 0.15f;
-      float g = active ? 0.25f : 0.15f;
-      float b = active ? 0.35f : 0.15f;
+      float r = active ? 0.18f : 0.11f;
+      float g = active ? 0.23f : 0.14f;
+      float b = active ? 0.31f : 0.18f;
 
       stygian_rect_rounded(ctx, tab_x, node->y + 2, tab_w - 4,
                            dock->tab_height - 4, r, g, b, 1.0f, 4.0f);
+      stygian_rect_rounded(ctx, tab_x + 1.0f, node->y + 3.0f, tab_w - 6.0f,
+                           dock->tab_height - 6.0f, r + 0.02f, g + 0.02f,
+                           b + 0.02f, active ? 0.60f : 0.36f, 3.0f);
+      if (active) {
+        stygian_rect(ctx, tab_x + 12.0f, node->y + dock->tab_height - 3.0f,
+                     tab_w - 28.0f, 2.0f, 0.43f, 0.67f, 1.0f, 0.92f);
+      }
 
       // Tab title
       if (font) {
@@ -593,8 +600,9 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
                            title_buf, sizeof(title_buf), &title_size, &title_w);
         title_x = title_left;
         title_y = node->y + (dock->tab_height - title_size) * 0.5f;
-        stygian_text(ctx, font, title_buf, title_x, title_y, title_size, 0.9f,
-                     0.9f, 0.9f, 1.0f);
+        stygian_text(ctx, font, title_buf, title_x, title_y, title_size,
+                     active ? 0.95f : 0.82f, active ? 0.97f : 0.86f,
+                     active ? 1.0f : 0.92f, 1.0f);
       }
 
       // Close button (right side of tab)
@@ -605,7 +613,7 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
 
         // Circle background (subtle)
         stygian_rect_rounded(ctx, close_x, close_y, close_size, close_size,
-                             0.4f, 0.3f, 0.3f, 0.8f, close_size / 2);
+                             0.22f, 0.15f, 0.17f, 0.86f, close_size / 2);
 
         // X icon using proper SDF icon element (centered in bounds)
         StygianElement close_icon = stygian_element_transient(ctx);
@@ -621,8 +629,8 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
     // Render content area background
     float content_y = node->y + dock->tab_height;
     float content_h = node->h - dock->tab_height;
-    stygian_rect(ctx, node->x, content_y, node->w, content_h, 0.08f, 0.08f,
-                 0.08f, 1.0f);
+    stygian_rect(ctx, node->x, content_y, node->w, content_h, 0.05f, 0.07f,
+                 0.10f, 1.0f);
 
     // Focus highlight (border around content when focused)
     if (dock->focused_node == node) {
@@ -649,7 +657,11 @@ static void render_node_recursive(StygianContext *ctx, StygianFont font,
       if (panel && panel->render) {
         // TODO: Bind FBO, render, unbind
         // For now, render directly (no FBO)
+        // Panel callbacks are allowed to draw a lot of custom stuff. Keep it
+        // inside the content rect so one bad panel doesn't graffiti the next.
+        stygian_clip_push(ctx, node->x, content_y, node->w, content_h);
         panel->render(panel, ctx, font, node->x, content_y, node->w, content_h);
+        stygian_clip_pop(ctx);
         panel->dirty = false;
       }
     }

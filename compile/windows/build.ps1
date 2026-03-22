@@ -3,6 +3,7 @@ param(
   [string]$Group,
   [string]$Clang = "",
   [string]$VulkanSdk = "",
+  [string]$OutputDir = "build",
   [switch]$NoShaderCheck,
   [switch]$EnableCapture
 )
@@ -36,8 +37,8 @@ if (-not $VulkanSdk) {
   }
 }
 
-if (-not (Test-Path "build")) {
-  New-Item -ItemType Directory -Path "build" | Out-Null
+if (-not (Test-Path $OutputDir)) {
+  New-Item -ItemType Directory -Path $OutputDir | Out-Null
 }
 
 function Test-ShaderOutputs {
@@ -111,7 +112,7 @@ function Invoke-TargetBuild {
   }
   $args += "window/platform/stygian_win32.c"
 
-  $outPath = "build/$($targetDef.output_stem).exe"
+  $outPath = Join-Path $OutputDir "$($targetDef.output_stem).exe"
   $args += "-o"
   $args += $outPath
 
@@ -123,10 +124,12 @@ function Invoke-TargetBuild {
   $args += "-lgdi32"
   $args += "-ldwmapi"
   $args += "-lopengl32"
+  $args += "-lcomdlg32"
+  $args += "-lshell32"
+  $args += "-lole32"
   $args += "-lz"
   $args += "-lzstd"
   if ($captureRequested) {
-    $args += "-lole32"
     $args += "-loleaut32"
     $args += "-lmfplat"
     $args += "-lmfreadwrite"

@@ -23,6 +23,7 @@
 #define MAX_CHAR_EVENTS 32
 #define MAX_KEY_EVENTS 32
 #define MAX_WIDGET_REGIONS 4096
+#define MAX_WIDGET_OVERLAYS 32
 
 typedef struct WidgetRegion {
   float x;
@@ -30,7 +31,17 @@ typedef struct WidgetRegion {
   float w;
   float h;
   uint32_t flags;
+  uint32_t overlay_owner_id;
 } WidgetRegion;
+
+typedef struct WidgetOverlayRecord {
+  uint32_t id;
+  uint32_t flags;
+  float x;
+  float y;
+  float w;
+  float h;
+} WidgetOverlayRecord;
 
 typedef struct WidgetState {
   StygianContext *ctx;
@@ -68,6 +79,8 @@ typedef struct WidgetState {
   // Focus navigation (tab cycle)
   uint32_t focus_order_prev[1024];
   uint32_t focus_order_curr[1024];
+  uint32_t focus_owner_prev[1024];
+  uint32_t focus_owner_curr[1024];
   uint16_t focus_count_prev;
   uint16_t focus_count_curr;
   bool nav_prepared;
@@ -89,6 +102,13 @@ typedef struct WidgetState {
   uint16_t region_count_prev;
   uint16_t region_count_curr;
   bool has_region_snapshot;
+  WidgetOverlayRecord overlays_prev[MAX_WIDGET_OVERLAYS];
+  WidgetOverlayRecord overlays_curr[MAX_WIDGET_OVERLAYS];
+  uint16_t overlay_count_prev;
+  uint16_t overlay_count_curr;
+  bool has_overlay_snapshot;
+  uint32_t overlay_stack[MAX_WIDGET_OVERLAYS];
+  uint8_t overlay_stack_top;
   uint64_t impact_pointer_only_events;
   uint64_t impact_mutated_events;
   uint64_t impact_request_events;
@@ -225,6 +245,145 @@ static bool point_in_rect(float px, float py, float x, float y, float w,
   return px >= x && px <= x + w && py >= y && py <= y + h;
 }
 
+static uint32_t widget_current_overlay_id(void) {
+  if (g_widget_state.overlay_stack_top == 0u)
+    return 0u;
+  return g_widget_state
+      .overlay_stack[g_widget_state.overlay_stack_top - 1u];
+}
+
+static int widget_focus_index_prev(uint32_t id) {
+  int i;
+  if (id == 0u)
+    return -1;
+  for (i = 0; i < (int)g_widget_state.focus_count_prev; ++i) {
+    if (g_widget_state.focus_order_prev[i] == id)
+      return i;
+  }
+  return -1;
+}
+
+static bool widget_overlay_prev_exists(uint32_t overlay_id) {
+  uint16_t i;
+  if (overlay_id == 0u)
+    return false;
+  for (i = 0; i < g_widget_state.overlay_count_prev; ++i) {
+    if (g_widget_state.overlays_prev[i].id == overlay_id)
+      return true;
+  }
+  return false;
+}
+
+static uint32_t widget_overlay_top_id_from_records(const WidgetOverlayRecord *recs,
+                                                   uint16_t count,
+                                                   uint32_t need_flags) {
+  int i;
+  if (!recs || need_flags == 0u)
+    return 0u;
+  for (i = (int)count - 1; i >= 0; --i) {
+    if ((recs[i].flags & need_flags) == need_flags)
+      return recs[i].id;
+  }
+  return 0u;
+}
+
+static uint32_t widget_top_pointer_overlay_id(void) {
+  uint32_t current = widget_overlay_top_id_from_records(
+      g_widget_state.overlays_curr, g_widget_state.overlay_count_curr,
+      STYGIAN_OVERLAY_BLOCK_POINTER);
+  if (current != 0u)
+    return current;
+  return widget_overlay_top_id_from_records(
+      g_widget_state.overlays_prev, g_widget_state.overlay_count_prev,
+      STYGIAN_OVERLAY_BLOCK_POINTER);
+}
+
+static uint32_t widget_top_keyboard_overlay_id(void) {
+  uint32_t current = widget_overlay_top_id_from_records(
+      g_widget_state.overlays_curr, g_widget_state.overlay_count_curr,
+      STYGIAN_OVERLAY_BLOCK_KEYBOARD);
+  if (current != 0u)
+    return current;
+  return widget_overlay_top_id_from_records(
+      g_widget_state.overlays_prev, g_widget_state.overlay_count_prev,
+      STYGIAN_OVERLAY_BLOCK_KEYBOARD);
+}
+
+static uint32_t widget_focus_overlay_id_prev(uint32_t focus_id) {
+  int idx = widget_focus_index_prev(focus_id);
+  if (idx < 0)
+    return 0u;
+  return g_widget_state.focus_owner_prev[idx];
+}
+
+static bool widget_pointer_allowed_for_owner(uint32_t owner_id) {
+  uint32_t blocker = widget_top_pointer_overlay_id();
+  if (blocker == 0u)
+    return true;
+  return owner_id == blocker;
+}
+
+static bool widget_pointer_hot(float x, float y, float w, float h) {
+  if (!point_in_rect((float)g_widget_state.mouse_x, (float)g_widget_state.mouse_y,
+                     x, y, w, h)) {
+    return false;
+  }
+  return widget_pointer_allowed_for_owner(widget_current_overlay_id());
+}
+
+static bool widget_keyboard_focus_allowed(void) {
+  uint32_t blocker = widget_top_keyboard_overlay_id();
+  if (blocker == 0u)
+    return true;
+  return widget_focus_overlay_id_prev(g_widget_state.focus_id) == blocker;
+}
+
+static bool widget_key_pressed(StygianKey key) {
+  int i;
+  for (i = 0; i < g_widget_state.key_count; ++i) {
+    if (g_widget_state.key_events[i].down &&
+        g_widget_state.key_events[i].key == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void widget_overlay_push_record(uint32_t overlay_id, uint32_t flags,
+                                       float x, float y, float w, float h) {
+  WidgetOverlayRecord *rec;
+  if (overlay_id == 0u)
+    return;
+  if (g_widget_state.overlay_count_curr >= MAX_WIDGET_OVERLAYS)
+    return;
+  rec = &g_widget_state.overlays_curr[g_widget_state.overlay_count_curr++];
+  rec->id = overlay_id;
+  rec->flags = flags;
+  rec->x = x;
+  rec->y = y;
+  rec->w = w;
+  rec->h = h;
+}
+
+static void widget_overlay_scope_push(uint32_t overlay_id) {
+  if (overlay_id == 0u)
+    return;
+  if (g_widget_state.overlay_stack_top >= MAX_WIDGET_OVERLAYS)
+    return;
+  g_widget_state.overlay_stack[g_widget_state.overlay_stack_top++] = overlay_id;
+}
+
+static void widget_overlay_scope_pop(uint32_t overlay_id) {
+  if (g_widget_state.overlay_stack_top == 0u)
+    return;
+  if (g_widget_state.overlay_stack[g_widget_state.overlay_stack_top - 1u] ==
+      overlay_id) {
+    --g_widget_state.overlay_stack_top;
+  } else {
+    g_widget_state.overlay_stack_top = 0u;
+  }
+}
+
 static void widget_register_region_internal(float x, float y, float w, float h,
                                             uint32_t flags) {
   WidgetRegion *r;
@@ -238,16 +397,21 @@ static void widget_register_region_internal(float x, float y, float w, float h,
   r->w = w;
   r->h = h;
   r->flags = flags;
+  r->overlay_owner_id = widget_current_overlay_id();
 }
 
 static bool widget_region_hit_prev(float px, float py, uint32_t need_flags) {
   int i;
+  uint32_t pointer_overlay;
   if (need_flags == 0u)
     return false;
   if (!g_widget_state.has_region_snapshot)
     return false;
+  pointer_overlay = widget_top_pointer_overlay_id();
   for (i = (int)g_widget_state.region_count_prev - 1; i >= 0; --i) {
     const WidgetRegion *r = &g_widget_state.regions_prev[i];
+    if (pointer_overlay != 0u && r->overlay_owner_id != pointer_overlay)
+      continue;
     if ((r->flags & need_flags) != 0u &&
         point_in_rect(px, py, r->x, r->y, r->w, r->h)) {
       return true;
@@ -321,27 +485,47 @@ static void widget_nav_prepare(void) {
   if (g_widget_state.nav_tab_pressed && g_widget_state.focus_count_prev > 0u) {
     int i;
     int focused_index = -1;
+    uint32_t keyboard_blocker = widget_top_keyboard_overlay_id();
+    uint32_t eligible_ids[1024];
+    uint16_t eligible_count = 0u;
+    uint16_t chosen_count;
+    uint32_t *chosen_ids;
     for (i = 0; i < (int)g_widget_state.focus_count_prev; i++) {
-      if (g_widget_state.focus_order_prev[i] == g_widget_state.focus_id) {
+      if (keyboard_blocker != 0u &&
+          g_widget_state.focus_owner_prev[i] != keyboard_blocker) {
+        continue;
+      }
+      eligible_ids[eligible_count++] = g_widget_state.focus_order_prev[i];
+    }
+    chosen_ids = g_widget_state.focus_order_prev;
+    chosen_count = g_widget_state.focus_count_prev;
+    if (keyboard_blocker != 0u && eligible_count > 0u) {
+      chosen_ids = eligible_ids;
+      chosen_count = eligible_count;
+    }
+    if (chosen_count == 0u)
+      return;
+    for (i = 0; i < (int)chosen_count; i++) {
+      if (chosen_ids[i] == g_widget_state.focus_id) {
         focused_index = i;
         break;
       }
     }
     if (focused_index < 0) {
-      g_widget_state.focus_id = g_widget_state.focus_order_prev[0];
+      g_widget_state.focus_id = chosen_ids[0];
     } else {
       int next =
           g_widget_state.nav_shift_pressed
-              ? (focused_index - 1 + (int)g_widget_state.focus_count_prev) %
-                    (int)g_widget_state.focus_count_prev
-              : (focused_index + 1) % (int)g_widget_state.focus_count_prev;
-      g_widget_state.focus_id = g_widget_state.focus_order_prev[next];
+              ? (focused_index - 1 + (int)chosen_count) % (int)chosen_count
+              : (focused_index + 1) % (int)chosen_count;
+      g_widget_state.focus_id = chosen_ids[next];
     }
   }
 }
 
 static void widget_register_focusable(uint32_t id) {
   uint16_t i;
+  uint32_t owner_id = widget_current_overlay_id();
   if (id == 0)
     return;
   for (i = 0; i < g_widget_state.focus_count_curr; i++) {
@@ -351,7 +535,9 @@ static void widget_register_focusable(uint32_t id) {
   if (g_widget_state.focus_count_curr <
       (uint16_t)(sizeof(g_widget_state.focus_order_curr) /
                  sizeof(g_widget_state.focus_order_curr[0]))) {
-    g_widget_state.focus_order_curr[g_widget_state.focus_count_curr++] = id;
+    g_widget_state.focus_order_curr[g_widget_state.focus_count_curr] = id;
+    g_widget_state.focus_owner_curr[g_widget_state.focus_count_curr] = owner_id;
+    g_widget_state.focus_count_curr++;
   }
 }
 
@@ -392,8 +578,11 @@ void stygian_widgets_begin_frame(StygianContext *ctx) {
   g_widget_state.focus_count_prev = g_widget_state.focus_count_curr;
   for (i = 0; i < g_widget_state.focus_count_prev; i++) {
     g_widget_state.focus_order_prev[i] = g_widget_state.focus_order_curr[i];
+    g_widget_state.focus_owner_prev[i] = g_widget_state.focus_owner_curr[i];
   }
   g_widget_state.focus_count_curr = 0;
+  g_widget_state.overlay_count_curr = 0;
+  g_widget_state.overlay_stack_top = 0u;
   g_widget_state.nav_prepared = false;
 
   // Reset hot widget each frame
@@ -507,7 +696,7 @@ stygian_widgets_process_event_ex(StygianContext *ctx, const StygianEvent *e) {
     }
   } else if (e->type == STYGIAN_EVENT_CHAR) {
     // Character input is meaningful only when a widget currently owns focus.
-    if (g_widget_state.focus_id != 0u) {
+    if (g_widget_state.focus_id != 0u && widget_keyboard_focus_allowed()) {
       impact |= STYGIAN_IMPACT_REQUEST_REPAINT;
       impact |= STYGIAN_IMPACT_MUTATED_STATE;
       if (g_widget_state.char_count < MAX_CHAR_EVENTS) {
@@ -521,10 +710,22 @@ stygian_widgets_process_event_ex(StygianContext *ctx, const StygianEvent *e) {
     }
   } else if (e->type == STYGIAN_EVENT_KEY_DOWN ||
              e->type == STYGIAN_EVENT_KEY_UP) {
+    bool keyboard_blocked = widget_top_keyboard_overlay_id() != 0u;
+    bool focus_allowed = widget_keyboard_focus_allowed();
     bool key_affects_ui =
-        (g_widget_state.focus_id != 0u || e->key.key == STYGIAN_KEY_TAB ||
-         e->key.key == STYGIAN_KEY_ENTER || e->key.key == STYGIAN_KEY_SPACE ||
-         e->key.key == STYGIAN_KEY_ESCAPE);
+        keyboard_blocked
+            ? (focus_allowed || e->key.key == STYGIAN_KEY_TAB ||
+               e->key.key == STYGIAN_KEY_ENTER ||
+               e->key.key == STYGIAN_KEY_SPACE ||
+               e->key.key == STYGIAN_KEY_ESCAPE ||
+               e->key.key == STYGIAN_KEY_LEFT ||
+               e->key.key == STYGIAN_KEY_RIGHT ||
+               e->key.key == STYGIAN_KEY_UP ||
+               e->key.key == STYGIAN_KEY_DOWN)
+            : (g_widget_state.focus_id != 0u || e->key.key == STYGIAN_KEY_TAB ||
+               e->key.key == STYGIAN_KEY_ENTER ||
+               e->key.key == STYGIAN_KEY_SPACE ||
+               e->key.key == STYGIAN_KEY_ESCAPE);
     if (key_affects_ui) {
       impact |= STYGIAN_IMPACT_REQUEST_REPAINT;
       if (e->type == STYGIAN_EVENT_KEY_DOWN) {
@@ -597,6 +798,13 @@ void stygian_widgets_commit_regions(void) {
     g_widget_state.regions_prev[i] = g_widget_state.regions_curr[i];
   }
   g_widget_state.has_region_snapshot = true;
+  g_widget_state.overlay_count_prev = g_widget_state.overlay_count_curr;
+  if (g_widget_state.overlay_count_prev > MAX_WIDGET_OVERLAYS)
+    g_widget_state.overlay_count_prev = MAX_WIDGET_OVERLAYS;
+  for (i = 0; i < g_widget_state.overlay_count_prev; ++i) {
+    g_widget_state.overlays_prev[i] = g_widget_state.overlays_curr[i];
+  }
+  g_widget_state.has_overlay_snapshot = true;
 }
 
 float stygian_widgets_scroll_dx(void) { return g_widget_state.scroll_dx; }
@@ -748,8 +956,7 @@ void stygian_perf_widget(StygianContext *ctx, StygianFont font,
   if (win)
     stygian_window_get_size(win, &vp_w, &vp_h);
 
-  over_header = point_in_rect((float)g_widget_state.mouse_x,
-                              (float)g_widget_state.mouse_y, x, y, w, header_h);
+  over_header = widget_pointer_hot(x, y, w, header_h);
   if (over_header && widget_mouse_pressed()) {
     g_perf_drag.active = state;
     g_perf_drag.drag_off_x = (float)g_widget_state.mouse_x - x;
@@ -1240,6 +1447,7 @@ void stygian_perf_widget_set_enabled(StygianPerfWidget *state, bool enabled) {
 typedef struct {
   bool active;
   uint8_t clip_id;
+  uint32_t overlay_id;
 } ModalRuntimeState;
 
 typedef struct {
@@ -1254,6 +1462,111 @@ typedef struct {
 
 static ModalRuntimeState g_modal_runtime = {0};
 static ContextMenuRuntimeState g_context_menu_runtime = {0};
+
+static uint32_t widget_overlay_resolve_id(uint32_t requested,
+                                          const void *state_ptr) {
+  uint32_t hash = requested;
+  uintptr_t ptr_bits;
+  if (hash != 0u)
+    return hash;
+  ptr_bits = (uintptr_t)state_ptr;
+  hash = 2166136261u;
+  while (ptr_bits != 0u) {
+    hash ^= (uint32_t)(ptr_bits & 0xFFu);
+    hash *= 16777619u;
+    ptr_bits >>= 8u;
+  }
+  if (hash == 0u)
+    hash = 1u;
+  return hash;
+}
+
+static bool widget_overlay_begin_panel(StygianContext *ctx, uint32_t overlay_id,
+                                       uint32_t flags, bool *open,
+                                       float viewport_w, float viewport_h,
+                                       float panel_x, float panel_y,
+                                       float panel_w, float panel_h,
+                                       float radius, float content_padding,
+                                       float header_h, StygianFont font,
+                                       const char *title,
+                                       float *out_content_x,
+                                       float *out_content_y,
+                                       float *out_content_w,
+                                       float *out_content_h) {
+  bool just_opened;
+  bool pointer_modal;
+  bool inside;
+  if (!ctx || !open || !*open || overlay_id == 0u)
+    return false;
+
+  just_opened = !widget_overlay_prev_exists(overlay_id);
+  pointer_modal = (flags & STYGIAN_OVERLAY_BLOCK_POINTER) != 0u ||
+                  (flags & STYGIAN_OVERLAY_CLOSE_ON_BACKDROP) != 0u;
+  inside = point_in_rect((float)g_widget_state.mouse_x,
+                         (float)g_widget_state.mouse_y, panel_x, panel_y,
+                         panel_w, panel_h);
+
+  if ((flags & STYGIAN_OVERLAY_CLOSE_ON_ESCAPE) &&
+      widget_key_pressed(STYGIAN_KEY_ESCAPE)) {
+    *open = false;
+    return false;
+  }
+  if (!just_opened && (flags & STYGIAN_OVERLAY_CLOSE_ON_BACKDROP) &&
+      widget_mouse_pressed() && !inside) {
+    *open = false;
+    return false;
+  }
+
+  widget_overlay_push_record(overlay_id, flags, panel_x, panel_y, panel_w,
+                             panel_h);
+  widget_overlay_scope_push(overlay_id);
+  stygian_overlay_scope_begin(ctx, overlay_id);
+
+  if (pointer_modal) {
+    widget_register_region_internal(0.0f, 0.0f, viewport_w, viewport_h,
+                                    STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
+  }
+  widget_register_region_internal(panel_x, panel_y, panel_w, panel_h,
+                                  STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
+
+  if (flags & STYGIAN_OVERLAY_DIM_BACKDROP) {
+    stygian_rect(ctx, 0.0f, 0.0f, viewport_w, viewport_h, 0.02f, 0.02f, 0.03f,
+                 0.70f);
+  }
+
+  stygian_rect_rounded(ctx, panel_x, panel_y, panel_w, panel_h, 0.11f, 0.12f,
+                       0.14f, 0.98f, radius);
+  if (header_h > 0.0f) {
+    stygian_rect_rounded(ctx, panel_x, panel_y, panel_w, header_h, 0.15f, 0.17f,
+                         0.22f, 1.0f, radius);
+    if (font && title && title[0]) {
+      stygian_text(ctx, font, title, panel_x + 10.0f, panel_y + 6.0f, 14.0f,
+                   0.95f, 0.97f, 1.0f, 1.0f);
+    }
+  }
+
+  if (out_content_x)
+    *out_content_x = panel_x + content_padding;
+  if (out_content_y)
+    *out_content_y = panel_y + header_h + content_padding;
+  if (out_content_w)
+    *out_content_w = panel_w - (content_padding * 2.0f);
+  if (out_content_h)
+    *out_content_h = panel_h - header_h - (content_padding * 2.0f);
+
+  stygian_clip_push(ctx, panel_x + content_padding, panel_y + header_h + content_padding,
+                    panel_w - (content_padding * 2.0f),
+                    panel_h - header_h - (content_padding * 2.0f));
+  return true;
+}
+
+static void widget_overlay_end_panel(StygianContext *ctx, uint32_t overlay_id) {
+  if (!ctx || overlay_id == 0u)
+    return;
+  stygian_clip_pop(ctx);
+  stygian_overlay_scope_end(ctx);
+  widget_overlay_scope_pop(overlay_id);
+}
 
 void stygian_tooltip(StygianContext *ctx, StygianFont font,
                      const StygianTooltip *tooltip) {
@@ -1302,9 +1615,7 @@ bool stygian_context_menu_trigger_region(StygianContext *ctx,
   widget_register_region_internal(x, y, w, h,
                                   STYGIAN_WIDGET_REGION_POINTER_RIGHT_MUTATES);
 
-  if (point_in_rect((float)g_widget_state.mouse_x,
-                    (float)g_widget_state.mouse_y, x, y, w, h) &&
-      widget_right_pressed()) {
+  if (widget_pointer_hot(x, y, w, h) && widget_right_pressed()) {
     state->open = true;
     state->x = (float)g_widget_state.mouse_x;
     state->y = (float)g_widget_state.mouse_y;
@@ -1343,15 +1654,14 @@ bool stygian_context_menu_begin(StygianContext *ctx, StygianFont font,
   if (panel_y < 0.0f)
     panel_y = 0.0f;
 
-  // While menu is open, allow pointer routing anywhere so outside-click close
-  // works without input-driven global repaint leaks in normal mode.
-  widget_register_region_internal(0.0f, 0.0f, (float)vp_w, (float)vp_h,
-                                  STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
-  widget_register_region_internal(panel_x, panel_y, panel_w, panel_h,
-                                  STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
-
-  stygian_rect_rounded(ctx, panel_x, panel_y, panel_w, panel_h, 0.11f, 0.12f,
-                       0.14f, 0.97f, 6.0f);
+  if (!widget_overlay_begin_panel(
+          ctx, widget_overlay_resolve_id(0u, state),
+          STYGIAN_OVERLAY_BLOCK_POINTER | STYGIAN_OVERLAY_CLOSE_ON_BACKDROP,
+          &state->open, (float)vp_w, (float)vp_h, panel_x, panel_y, panel_w,
+          panel_h, 6.0f, 4.0f, 0.0f, font, NULL, NULL, NULL, NULL, NULL)) {
+    g_context_menu_runtime.active = false;
+    return false;
+  }
   if (font) {
     stygian_text(ctx, font, "Menu", panel_x + 8.0f, panel_y + 4.0f, 12.0f,
                  0.82f, 0.86f, 0.92f, 1.0f);
@@ -1396,21 +1706,12 @@ bool stygian_context_menu_item(StygianContext *ctx, StygianFont font,
 }
 
 void stygian_context_menu_end(StygianContext *ctx, StygianContextMenu *state) {
-  bool inside;
   if (!ctx || !state || !g_context_menu_runtime.active ||
       g_context_menu_runtime.menu != state) {
     g_context_menu_runtime.active = false;
     return;
   }
-
-  inside = point_in_rect(
-      (float)g_widget_state.mouse_x, (float)g_widget_state.mouse_y,
-      g_context_menu_runtime.x - 4.0f, g_context_menu_runtime.y - 4.0f,
-      g_context_menu_runtime.w + 8.0f, g_context_menu_runtime.panel_h);
-  if (!inside && widget_mouse_pressed()) {
-    state->open = false;
-  }
-
+  widget_overlay_end_panel(ctx, widget_overlay_resolve_id(0u, state));
   g_context_menu_runtime.active = false;
 }
 
@@ -1421,8 +1722,6 @@ bool stygian_modal_begin(StygianContext *ctx, StygianFont font,
   float mh;
   float mx;
   float my;
-  bool pressed;
-  bool inside;
   if (!ctx || !state || !state->open)
     return false;
 
@@ -1430,34 +1729,20 @@ bool stygian_modal_begin(StygianContext *ctx, StygianFont font,
   mh = state->h > 40.0f ? state->h : 260.0f;
   mx = (viewport_w - mw) * 0.5f;
   my = (viewport_h - mh) * 0.5f;
-  if (state->close_on_backdrop) {
-    widget_register_region_internal(0.0f, 0.0f, viewport_w, viewport_h,
-                                    STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
-  } else {
-    widget_register_region_internal(mx, my, mw, mh,
-                                    STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
-  }
-
-  stygian_rect(ctx, 0.0f, 0.0f, viewport_w, viewport_h, 0.02f, 0.02f, 0.03f,
-               0.70f);
-  stygian_rect_rounded(ctx, mx, my, mw, mh, 0.11f, 0.12f, 0.14f, 0.98f, 8.0f);
-  stygian_rect_rounded(ctx, mx, my, mw, 28.0f, 0.15f, 0.17f, 0.22f, 1.0f, 8.0f);
-  if (font && state->title) {
-    stygian_text(ctx, font, state->title, mx + 10.0f, my + 6.0f, 14.0f, 0.95f,
-                 0.97f, 1.0f, 1.0f);
-  }
-
-  pressed = widget_mouse_pressed();
-  inside = point_in_rect((float)g_widget_state.mouse_x,
-                         (float)g_widget_state.mouse_y, mx, my, mw, mh);
-  if (state->close_on_backdrop && pressed && !inside) {
-    state->open = false;
+  if (!widget_overlay_begin_panel(
+          ctx, widget_overlay_resolve_id(0u, state),
+          STYGIAN_OVERLAY_BLOCK_POINTER | STYGIAN_OVERLAY_BLOCK_KEYBOARD |
+              STYGIAN_OVERLAY_DIM_BACKDROP |
+              STYGIAN_OVERLAY_CLOSE_ON_ESCAPE |
+              (state->close_on_backdrop ? STYGIAN_OVERLAY_CLOSE_ON_BACKDROP
+                                        : 0u),
+          &state->open, viewport_w, viewport_h, mx, my, mw, mh, 8.0f, 8.0f,
+          28.0f, font, state->title, NULL, NULL, NULL, NULL)) {
+    g_modal_runtime.active = false;
     return false;
   }
-
   g_modal_runtime.active = true;
-  g_modal_runtime.clip_id =
-      stygian_clip_push(ctx, mx + 8.0f, my + 32.0f, mw - 16.0f, mh - 40.0f);
+  g_modal_runtime.overlay_id = widget_overlay_resolve_id(0u, state);
   return true;
 }
 
@@ -1465,8 +1750,187 @@ void stygian_modal_end(StygianContext *ctx, StygianModal *state) {
   (void)state;
   if (!ctx || !g_modal_runtime.active)
     return;
-  stygian_clip_pop(ctx);
+  widget_overlay_end_panel(ctx, g_modal_runtime.overlay_id);
   g_modal_runtime.active = false;
+}
+
+bool stygian_overlay_pointer_blocked(void) {
+  return widget_top_pointer_overlay_id() != 0u;
+}
+
+bool stygian_overlay_keyboard_blocked(void) {
+  return widget_top_keyboard_overlay_id() != 0u;
+}
+
+bool stygian_popover_begin(StygianContext *ctx, StygianPopover *state,
+                           float viewport_w, float viewport_h) {
+  float panel_w;
+  float panel_h;
+  float panel_x;
+  float panel_y;
+  float pad;
+  uint32_t flags;
+  if (!ctx || !state || !state->open)
+    return false;
+
+  panel_w = state->w > 40.0f ? state->w : 220.0f;
+  panel_h = state->h > 24.0f ? state->h : 160.0f;
+  pad = state->viewport_padding > 0.0f ? state->viewport_padding : 8.0f;
+  switch (state->placement) {
+  case STYGIAN_POPOVER_BOTTOM_END:
+    panel_x = state->anchor_x + state->anchor_w - panel_w;
+    panel_y = state->anchor_y + state->anchor_h + 6.0f;
+    break;
+  case STYGIAN_POPOVER_TOP_START:
+    panel_x = state->anchor_x;
+    panel_y = state->anchor_y - panel_h - 6.0f;
+    break;
+  case STYGIAN_POPOVER_TOP_END:
+    panel_x = state->anchor_x + state->anchor_w - panel_w;
+    panel_y = state->anchor_y - panel_h - 6.0f;
+    break;
+  case STYGIAN_POPOVER_RIGHT_START:
+    panel_x = state->anchor_x + state->anchor_w + 6.0f;
+    panel_y = state->anchor_y;
+    break;
+  case STYGIAN_POPOVER_LEFT_START:
+    panel_x = state->anchor_x - panel_w - 6.0f;
+    panel_y = state->anchor_y;
+    break;
+  case STYGIAN_POPOVER_BOTTOM_START:
+  default:
+    panel_x = state->anchor_x;
+    panel_y = state->anchor_y + state->anchor_h + 6.0f;
+    break;
+  }
+
+  if (panel_x + panel_w > viewport_w - pad)
+    panel_x = viewport_w - pad - panel_w;
+  if (panel_y + panel_h > viewport_h - pad)
+    panel_y = viewport_h - pad - panel_h;
+  if (panel_x < pad)
+    panel_x = pad;
+  if (panel_y < pad)
+    panel_y = pad;
+
+  flags = state->flags;
+  if ((flags & (STYGIAN_OVERLAY_BLOCK_POINTER |
+                STYGIAN_OVERLAY_CLOSE_ON_BACKDROP)) == 0u) {
+    flags |= STYGIAN_OVERLAY_BLOCK_POINTER;
+  }
+  if (!widget_overlay_begin_panel(
+          ctx, widget_overlay_resolve_id(state->id, state), flags, &state->open,
+          viewport_w, viewport_h, panel_x, panel_y, panel_w, panel_h, 6.0f,
+          state->content_padding > 0.0f ? state->content_padding : 8.0f, 0.0f,
+          0, NULL, &state->content_x, &state->content_y, &state->content_w,
+          &state->content_h)) {
+    return false;
+  }
+
+  state->x = panel_x;
+  state->y = panel_y;
+  return true;
+}
+
+void stygian_popover_end(StygianContext *ctx, StygianPopover *state) {
+  if (!ctx || !state)
+    return;
+  widget_overlay_end_panel(ctx, widget_overlay_resolve_id(state->id, state));
+}
+
+bool stygian_drawer_begin(StygianContext *ctx, StygianDrawer *state,
+                          float viewport_w, float viewport_h) {
+  float pad;
+  float panel_x;
+  float panel_y;
+  float panel_w;
+  float panel_h;
+  uint32_t flags;
+  if (!ctx || !state || !state->open)
+    return false;
+
+  pad = state->viewport_padding > 0.0f ? state->viewport_padding : 0.0f;
+  switch (state->edge) {
+  case STYGIAN_OVERLAY_EDGE_LEFT:
+    panel_w = state->extent > 40.0f ? state->extent : viewport_w * 0.28f;
+    panel_h = viewport_h - (pad * 2.0f);
+    panel_x = pad;
+    panel_y = pad;
+    break;
+  case STYGIAN_OVERLAY_EDGE_RIGHT:
+    panel_w = state->extent > 40.0f ? state->extent : viewport_w * 0.28f;
+    panel_h = viewport_h - (pad * 2.0f);
+    panel_x = viewport_w - pad - panel_w;
+    panel_y = pad;
+    break;
+  case STYGIAN_OVERLAY_EDGE_TOP:
+    panel_w = viewport_w - (pad * 2.0f);
+    panel_h = state->extent > 40.0f ? state->extent : viewport_h * 0.28f;
+    panel_x = pad;
+    panel_y = pad;
+    break;
+  case STYGIAN_OVERLAY_EDGE_BOTTOM:
+  default:
+    panel_w = viewport_w - (pad * 2.0f);
+    panel_h = state->extent > 40.0f ? state->extent : viewport_h * 0.28f;
+    panel_x = pad;
+    panel_y = viewport_h - pad - panel_h;
+    break;
+  }
+
+  flags = state->flags | STYGIAN_OVERLAY_BLOCK_POINTER;
+  if (!widget_overlay_begin_panel(
+          ctx, widget_overlay_resolve_id(state->id, state), flags, &state->open,
+          viewport_w, viewport_h, panel_x, panel_y, panel_w, panel_h, 10.0f,
+          state->content_padding > 0.0f ? state->content_padding : 10.0f, 0.0f,
+          0, NULL, &state->content_x, &state->content_y, &state->content_w,
+          &state->content_h)) {
+    return false;
+  }
+  state->x = panel_x;
+  state->y = panel_y;
+  state->w = panel_w;
+  state->h = panel_h;
+  return true;
+}
+
+void stygian_drawer_end(StygianContext *ctx, StygianDrawer *state) {
+  if (!ctx || !state)
+    return;
+  widget_overlay_end_panel(ctx, widget_overlay_resolve_id(state->id, state));
+}
+
+bool stygian_sheet_begin(StygianContext *ctx, StygianSheet *state,
+                         float viewport_w, float viewport_h) {
+  StygianDrawer drawer;
+  if (!state)
+    return false;
+  memset(&drawer, 0, sizeof(drawer));
+  drawer.open = state->open;
+  drawer.id = state->id;
+  drawer.flags = state->flags | STYGIAN_OVERLAY_BLOCK_POINTER;
+  drawer.extent = state->h > 40.0f ? state->h : viewport_h * 0.35f;
+  drawer.viewport_padding = state->viewport_padding;
+  drawer.content_padding = state->content_padding;
+  drawer.edge = STYGIAN_OVERLAY_EDGE_BOTTOM;
+  if (!stygian_drawer_begin(ctx, &drawer, viewport_w, viewport_h)) {
+    state->open = drawer.open;
+    return false;
+  }
+  state->open = drawer.open;
+  state->x = drawer.x;
+  state->y = drawer.y;
+  state->content_x = drawer.content_x;
+  state->content_y = drawer.content_y;
+  state->content_w = drawer.content_w;
+  state->content_h = drawer.content_h;
+  return true;
+}
+
+void stygian_sheet_end(StygianContext *ctx, StygianSheet *state) {
+  if (!ctx || !state)
+    return;
+  widget_overlay_end_panel(ctx, widget_overlay_resolve_id(state->id, state));
 }
 
 // ============================================================================
@@ -1478,8 +1942,7 @@ bool stygian_button(StygianContext *ctx, StygianFont font, const char *label,
   uint32_t id = widget_id(x, y, label);
   widget_register_region_internal(x, y, w, h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
-  bool hovered =
-      point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y, x, y, w, h);
+  bool hovered = widget_pointer_hot(x, y, w, h);
   bool focused;
   bool clicked = false;
 
@@ -1513,32 +1976,36 @@ bool stygian_button(StygianContext *ctx, StygianFont font, const char *label,
   }
 
   // Render button
-  float bg_r = 0.25f, bg_g = 0.25f, bg_b = 0.25f, bg_a = 1.0f;
+  float bg_r = 0.18f, bg_g = 0.20f, bg_b = 0.25f, bg_a = 1.0f;
   if (active) {
-    bg_r = 0.15f;
+    bg_r = 0.13f;
     bg_g = 0.15f;
-    bg_b = 0.15f;
+    bg_b = 0.19f;
   } else if (focused) {
-    bg_r = 0.22f;
-    bg_g = 0.24f;
-    bg_b = 0.30f;
+    bg_r = 0.21f;
+    bg_g = 0.27f;
+    bg_b = 0.35f;
   } else if (hovered) {
-    bg_r = 0.35f;
-    bg_g = 0.35f;
+    bg_r = 0.23f;
+    bg_g = 0.28f;
     bg_b = 0.35f;
   }
 
-  stygian_rect_rounded(ctx, x, y, w, h, bg_r, bg_g, bg_b, bg_a, 4.0f);
+  stygian_rect_rounded(ctx, x, y, w, h, bg_r, bg_g, bg_b, bg_a, 7.0f);
+  stygian_rect_rounded(ctx, x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f,
+                       bg_r + 0.03f, bg_g + 0.03f, bg_b + 0.03f, 0.62f, 6.0f);
+  stygian_rect(ctx, x + 1.0f, y + 1.0f, w - 2.0f, 1.0f, 0.45f, 0.52f, 0.64f,
+               hovered || focused ? 0.35f : 0.20f);
 
   // Render text (centered)
   if (label) {
     char fitted[128];
-    float text_size = 16.0f;
+    float text_size = 13.0f;
     float text_w = 0.0f;
     float text_x;
     float text_y;
     widget_fit_label(fitted, sizeof(fitted), ctx, font, label, w - 10.0f,
-                     16.0f, 11.0f, &text_size, &text_w);
+                     13.0f, 10.0f, &text_size, &text_w);
     text_x = x + (w - text_w) * 0.5f;
     if (text_x < x + 4.0f)
       text_x = x + 4.0f;
@@ -1556,13 +2023,14 @@ bool stygian_button_ex(StygianContext *ctx, StygianFont font,
   widget_register_region_internal(state->x, state->y, state->w, state->h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
   bool focused;
+  bool active;
 
   widget_register_focusable(id);
   widget_nav_prepare();
   focused = (g_widget_state.focus_id == id);
 
-  state->hovered = point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y,
-                                 state->x, state->y, state->w, state->h);
+  state->hovered =
+      widget_pointer_hot(state->x, state->y, state->w, state->h);
   state->clicked = false;
 
   if (state->hovered) {
@@ -1570,16 +2038,18 @@ bool stygian_button_ex(StygianContext *ctx, StygianFont font,
     if (widget_mouse_pressed()) {
       g_widget_state.active_id = id;
       g_widget_state.focus_id = id;
-      state->pressed = true;
     }
   }
 
+  active = (g_widget_state.active_id == id);
+  state->pressed = active && g_widget_state.mouse_down;
+
   if (widget_mouse_released()) {
-    if (state->pressed && state->hovered) {
+    if (active && state->hovered) {
       state->clicked = true;
     }
     state->pressed = false;
-    if (g_widget_state.active_id == id) {
+    if (active) {
       g_widget_state.active_id = 0;
     }
   }
@@ -1629,8 +2099,7 @@ bool stygian_slider(StygianContext *ctx, float x, float y, float w, float h,
   widget_register_region_internal(x, y, w, h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
   bool focused;
-  bool hovered =
-      point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y, x, y, w, h);
+  bool hovered = widget_pointer_hot(x, y, w, h);
   bool changed = false;
 
   widget_register_focusable(id);
@@ -1731,8 +2200,7 @@ bool stygian_slider_ex(StygianContext *ctx, StygianSlider *state,
   widget_register_region_internal(state->x, state->y, state->w, state->h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
   bool focused;
-  bool hovered = point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y,
-                               state->x, state->y, state->w, state->h);
+  bool hovered = widget_pointer_hot(state->x, state->y, state->w, state->h);
   bool changed = false;
 
   widget_register_focusable(id);
@@ -1825,8 +2293,7 @@ bool stygian_checkbox(StygianContext *ctx, StygianFont font, const char *label,
   widget_register_region_internal(x, y, total_w, box_size,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
 
-  bool hovered = point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y,
-                               x, y, total_w, box_size);
+  bool hovered = widget_pointer_hot(x, y, total_w, box_size);
   bool clicked = false;
 
   widget_register_focusable(id);
@@ -1917,8 +2384,7 @@ bool stygian_radio_button(StygianContext *ctx, StygianFont font,
   widget_register_region_internal(x, y, total_w, circle_size,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
 
-  bool hovered = point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y,
-                               x, y, total_w, circle_size);
+  bool hovered = widget_pointer_hot(x, y, total_w, circle_size);
   bool clicked = false;
 
   widget_register_focusable(id);
@@ -2006,8 +2472,7 @@ bool stygian_text_input(StygianContext *ctx, StygianFont font, float x, float y,
   id *= 16777619u;
   widget_register_region_internal(x, y, w, h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES);
-  bool hovered =
-      point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y, x, y, w, h);
+  bool hovered = widget_pointer_hot(x, y, w, h);
   bool changed = false;
 
   widget_register_focusable(id);
@@ -2932,8 +3397,7 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
   }
   widget_register_region_internal(state->x, state->y, state->w, state->h,
                                   region_flags);
-  bool hovered = point_in_rect(g_widget_state.mouse_x, g_widget_state.mouse_y,
-                               state->x, state->y, state->w, state->h);
+  bool hovered = widget_pointer_hot(state->x, state->y, state->w, state->h);
   widget_register_focusable(id);
   widget_nav_prepare();
   max_w_fallback = text_area_content_width(state->w, state->total_height > state->h);
@@ -3012,7 +3476,7 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
       StygianKey key = g_widget_state.key_events[i].key;
       bool shift = (g_widget_state.key_events[i].mods & STYGIAN_MOD_SHIFT);
 
-      if (key == STYGIAN_KEY_BACKSPACE) {
+      if (!state->read_only && key == STYGIAN_KEY_BACKSPACE) {
         if (has_selection) {
           text_area_delete_range(state, sel_min, sel_max);
           state->cursor_idx = sel_min;
@@ -3025,7 +3489,7 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
           state->selection_start = state->selection_end = state->cursor_idx;
           changed = true;
         }
-      } else if (key == STYGIAN_KEY_ENTER) {
+      } else if (!state->read_only && key == STYGIAN_KEY_ENTER) {
         if (has_selection) {
           text_area_delete_range(state, sel_min, sel_max);
           state->cursor_idx = sel_min;
@@ -3140,7 +3604,7 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
         } else {
           stygian_clipboard_push(ctx, state->buffer, NULL);
         }
-      } else if (key == STYGIAN_KEY_V &&
+      } else if (!state->read_only && key == STYGIAN_KEY_V &&
                  (g_widget_state.key_events[i].mods & STYGIAN_MOD_CTRL)) {
         // Universal Paste
         if (has_selection) {
@@ -3170,7 +3634,7 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
       uint32_t cp = g_widget_state.char_events[i];
       char utf8[4];
       int utf8_len;
-      if (cp >= 32u && cp != 0x7Fu) {
+      if (!state->read_only && cp >= 32u && cp != 0x7Fu) {
         utf8_len = text_utf8_encode(cp, utf8);
         if (utf8_len <= 0)
           continue;
@@ -3221,11 +3685,11 @@ bool stygian_text_area(StygianContext *ctx, StygianFont font,
     state->scroll_y = content_height - state->h;
 
   // Render Background
-  float bg_col[4] = {0.1f, 0.1f, 0.12f, 1.0f};
+  float bg_col[4] = {0.08f, 0.10f, 0.13f, 1.0f};
   if (state->focused) {
-    bg_col[0] = 0.12f;
+    bg_col[0] = 0.10f;
     bg_col[1] = 0.12f;
-    bg_col[2] = 0.15f;
+    bg_col[2] = 0.16f;
   }
   stygian_rect_rounded(ctx, state->x, state->y, state->w, state->h, bg_col[0],
                        bg_col[1], bg_col[2], 1.0f, 4.0f);
@@ -3397,11 +3861,8 @@ bool stygian_scrollbar_v(StygianContext *ctx, float x, float y, float w,
     ratio = 1.0f;
   thumb_y = y + ratio * travel;
 
-  hovered = point_in_rect((float)g_widget_state.mouse_x,
-                          (float)g_widget_state.mouse_y, x, y, w, h);
-  thumb_hovered =
-      point_in_rect((float)g_widget_state.mouse_x,
-                    (float)g_widget_state.mouse_y, x, thumb_y, w, thumb_h);
+  hovered = widget_pointer_hot(x, y, w, h);
+  thumb_hovered = widget_pointer_hot(x, thumb_y, w, thumb_h);
   mouse_pressed = widget_mouse_pressed();
   mouse_released = widget_mouse_released();
 
@@ -3574,9 +4035,7 @@ void stygian_node_graph_begin(StygianContext *ctx, StygianGraphState *state,
   widget_register_region_internal(state->x, state->y, state->w, state->h,
                                   STYGIAN_WIDGET_REGION_POINTER_LEFT_MUTATES |
                                       STYGIAN_WIDGET_REGION_SCROLL);
-  bool hovered = point_in_rect((float)g_widget_state.mouse_x,
-                               (float)g_widget_state.mouse_y, state->x,
-                               state->y, state->w, state->h);
+  bool hovered = widget_pointer_hot(state->x, state->y, state->w, state->h);
 
   // Pan: Middle Mouse
   if (hovered && middle_down) {

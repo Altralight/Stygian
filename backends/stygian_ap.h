@@ -24,6 +24,7 @@ typedef struct StygianAllocator StygianAllocator;
 typedef struct StygianSoAHot StygianSoAHot;
 typedef struct StygianSoAAppearance StygianSoAAppearance;
 typedef struct StygianSoAEffects StygianSoAEffects;
+typedef struct StygianSoATransform StygianSoATransform;
 typedef struct StygianBufferChunk StygianBufferChunk;
 
 // ============================================================================
@@ -119,6 +120,7 @@ void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
 void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
                            const StygianSoAAppearance *appearance,
                            const StygianSoAEffects *effects,
+                           const StygianSoATransform *transform,
                            uint32_t element_count,
                            const StygianBufferChunk *chunks,
                            uint32_t chunk_count, uint32_t chunk_size);

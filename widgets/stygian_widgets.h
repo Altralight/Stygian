@@ -4,6 +4,7 @@
 #define STYGIAN_WIDGETS_H
 
 #include "../include/stygian.h"
+#include "../include/stygian_fs.h"
 #include "../window/stygian_input.h"
 
 #ifdef __cplusplus
@@ -93,6 +94,7 @@ typedef struct StygianTextArea {
   float scroll_y;
   float total_height; // Computed
   bool focused;
+  bool read_only;
 } StygianTextArea;
 
 bool stygian_text_area(StygianContext *ctx, StygianFont font,
@@ -265,6 +267,81 @@ bool stygian_modal_begin(StygianContext *ctx, StygianFont font,
                          float viewport_h);
 void stygian_modal_end(StygianContext *ctx, StygianModal *state);
 
+typedef uint32_t StygianOverlayFlags;
+#define STYGIAN_OVERLAY_BLOCK_POINTER (1u << 0)
+#define STYGIAN_OVERLAY_BLOCK_KEYBOARD (1u << 1)
+#define STYGIAN_OVERLAY_CLOSE_ON_BACKDROP (1u << 2)
+#define STYGIAN_OVERLAY_CLOSE_ON_ESCAPE (1u << 3)
+#define STYGIAN_OVERLAY_DIM_BACKDROP (1u << 4)
+#define STYGIAN_OVERLAY_CAPTURE_FOCUS (1u << 5)
+
+typedef enum StygianPopoverPlacement {
+  STYGIAN_POPOVER_BOTTOM_START = 0,
+  STYGIAN_POPOVER_BOTTOM_END = 1,
+  STYGIAN_POPOVER_TOP_START = 2,
+  STYGIAN_POPOVER_TOP_END = 3,
+  STYGIAN_POPOVER_RIGHT_START = 4,
+  STYGIAN_POPOVER_LEFT_START = 5,
+} StygianPopoverPlacement;
+
+typedef enum StygianOverlayEdge {
+  STYGIAN_OVERLAY_EDGE_LEFT = 0,
+  STYGIAN_OVERLAY_EDGE_RIGHT = 1,
+  STYGIAN_OVERLAY_EDGE_TOP = 2,
+  STYGIAN_OVERLAY_EDGE_BOTTOM = 3,
+} StygianOverlayEdge;
+
+typedef struct StygianPopover {
+  bool open;
+  uint32_t id;
+  uint32_t flags;
+  float anchor_x, anchor_y, anchor_w, anchor_h;
+  float w, h;
+  float viewport_padding;
+  float content_padding;
+  float x, y;
+  float content_x, content_y, content_w, content_h;
+  StygianPopoverPlacement placement;
+} StygianPopover;
+
+typedef struct StygianDrawer {
+  bool open;
+  uint32_t id;
+  uint32_t flags;
+  float extent;
+  float viewport_padding;
+  float content_padding;
+  float x, y, w, h;
+  float content_x, content_y, content_w, content_h;
+  StygianOverlayEdge edge;
+} StygianDrawer;
+
+typedef struct StygianSheet {
+  bool open;
+  uint32_t id;
+  uint32_t flags;
+  float w, h;
+  float viewport_padding;
+  float content_padding;
+  float x, y;
+  float content_x, content_y, content_w, content_h;
+} StygianSheet;
+
+bool stygian_overlay_pointer_blocked(void);
+bool stygian_overlay_keyboard_blocked(void);
+
+bool stygian_popover_begin(StygianContext *ctx, StygianPopover *state,
+                           float viewport_w, float viewport_h);
+void stygian_popover_end(StygianContext *ctx, StygianPopover *state);
+
+bool stygian_drawer_begin(StygianContext *ctx, StygianDrawer *state,
+                          float viewport_w, float viewport_h);
+void stygian_drawer_end(StygianContext *ctx, StygianDrawer *state);
+
+bool stygian_sheet_begin(StygianContext *ctx, StygianSheet *state,
+                         float viewport_w, float viewport_h);
+void stygian_sheet_end(StygianContext *ctx, StygianSheet *state);
+
 // ============================================================================
 // Panel Widget
 // ============================================================================
@@ -292,7 +369,22 @@ typedef struct StygianFileExplorer {
   float x, y, w, h;
   const char *root_path;
   char selected_path[256];
+  char current_path[STYGIAN_FS_PATH_CAP];
+  char activated_path[STYGIAN_FS_PATH_CAP];
+  char history_paths[16][STYGIAN_FS_PATH_CAP];
+  uint32_t history_count;
+  int history_index;
   float scroll_y;
+  const char *name_filter;
+  const char *extension_filter;
+  float input_mouse_x;
+  float input_mouse_y;
+  float input_scroll_dy;
+  bool input_left_pressed;
+  int input_left_clicks;
+  bool input_confirm_pressed;
+  bool input_up_pressed;
+  bool input_down_pressed;
   // Callback for file selection/opening
   void (*on_file_select)(const char *path);
   void (*on_file_open)(const char *path);

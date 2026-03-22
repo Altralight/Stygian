@@ -1,0 +1,31 @@
+{
+  "schema_name": "stygian-editor-project",
+  "schema_major": 0,
+  "schema_minor": 5,
+  "viewport": "w=1280.000000;h=720.000000;px=0.000000;py=0.000000;z=1.000000",
+  "grid": "en=1;sub=1;maj=96.000000;div=4;min=8.000000;tol=-1.000000",
+  "ruler": "unit=0",
+  "snap_sources": "grid=1;guides=1;bounds=1;parent=1",
+  "next_ids": "node=4;path=1;behavior=1;ttrack=1;tclip=1;driver=1;guide=1",
+  "selection": "primary=0;ids=",
+  "color_tokens": [],
+  "guides": [],
+  "text_styles": [],
+  "effect_styles": [],
+  "layout_styles": [],
+  "variable_modes": [
+    "default"
+  ],
+  "active_variable_mode": 0,
+  "variables": [],
+  "nodes": [
+    "id=1;pid=0;k=component_def;v=1;lock=0;z=0.000000;val=0.000000;rot=0.000000;name=Component 1;hc=0;vc=0;cl=40.000000;cr=0.000000;ct=40.000000;cb=0.000000;ccx=0.000000;ccy=0.000000;cxr=0.000000;cyr=0.000000;cwr=0.000000;chr=0.000000;la=0;lsw=0;lsh=0;mnw=0.000000;mxw=0.000000;mnh=0.000000;mxh=0.000000;tok=;ts=;es=;ls=;cvar=;nvar=;nprop=0;x=40.000000;y=40.000000;w=180.000000;h=52.000000;sym=tab_default;vg=tab_variant;vn=default;cprops=n=state,t=1,b=0,e=default,oc=2,o=default~active",
+    "id=2;pid=0;k=component_def;v=1;lock=0;z=0.000000;val=0.000000;rot=0.000000;name=Component 2;hc=0;vc=0;cl=40.000000;cr=0.000000;ct=40.000000;cb=0.000000;ccx=0.000000;ccy=0.000000;cxr=0.000000;cyr=0.000000;cwr=0.000000;chr=0.000000;la=0;lsw=0;lsh=0;mnw=0.000000;mxw=0.000000;mnh=0.000000;mxh=0.000000;tok=;ts=;es=;ls=;cvar=;nvar=;nprop=0;x=40.000000;y=40.000000;w=180.000000;h=52.000000;sym=tab_active;vg=tab_variant;vn=active;cprops=n=state,t=1,b=0,e=active,oc=2,o=default~active",
+    "id=3;pid=0;k=component_instance;v=1;lock=0;z=0.000000;val=0.000000;rot=0.000000;name=Instance 3;hc=0;vc=0;cl=260.000000;cr=0.000000;ct=84.000000;cb=0.000000;ccx=0.000000;ccy=0.000000;cxr=0.000000;cyr=0.000000;cwr=0.000000;chr=0.000000;la=0;lsw=0;lsh=0;mnw=0.000000;mxw=0.000000;mnh=0.000000;mxh=0.000000;tok=;ts=;es=;ls=;cvar=;nvar=;nprop=0;x=260.000000;y=84.000000;w=180.000000;h=52.000000;cid=2;idet=0;ref=tab_active"
+  ],
+  "behaviors": [],
+  "timeline_tracks": [],
+  "timeline_clips": [],
+  "drivers": [],
+  "transition_clips": []
+}

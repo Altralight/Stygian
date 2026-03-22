@@ -131,7 +131,7 @@ int main(void) {
   }
 
   StygianFont font =
-      stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+      stygian_get_default_font(ctx);
 
   while (!stygian_window_should_close(window)) {
     StygianEvent event;

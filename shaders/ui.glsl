@@ -45,6 +45,17 @@ float render_icon_minimize(vec2 p, vec2 center) {
     return sdBox(p, vec2(line_w, 1.0));
 }
 
+// Type 14: STYGIAN_ICON_CHEVRON - Chevron icon
+float render_icon_chevron(vec2 p, vec2 center) {
+    float arm = min(center.x, center.y) * 0.50;
+    vec2 left = vec2(-arm, -arm * 0.25);
+    vec2 apex = vec2(0.0, arm * 0.60);
+    vec2 right = vec2(arm, -arm * 0.25);
+    float d1 = sdSegment(p, left, apex) - 1.45;
+    float d2 = sdSegment(p, apex, right) - 1.45;
+    return min(d1, d2);
+}
+
 // Type 11: STYGIAN_SEPARATOR - Separator line
 float render_separator(vec2 p) {
     return abs(p.y) - 0.5;

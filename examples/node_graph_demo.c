@@ -548,7 +548,7 @@ int main(int argc, char **argv) {
   }
   demo.perf.widget.enabled = demo.show_perf;
   node_graph_apply_mode(&demo);
-  demo.font = stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+  demo.font = stygian_get_default_font(ctx);
   if (bench_seconds > 0.0) {
     unattended_bench = true;
     demo.show_perf = false;

@@ -16,6 +16,7 @@ layout(location = 8) in vec2 vSize;
 layout(location = 9) flat in uint vInstanceID;
 layout(location = 10) flat in uint vTextureID;
 layout(location = 11) flat in vec4 vReserved0; // control points for bezier/wire/metaball
+layout(location = 12) in vec2 vWorldPos;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -205,10 +206,9 @@ void main() {
     uint clip_id = (h_clip.flags & 0x0000FF00u) >> 8u;
     if (clip_id != 0u) {
         vec4 clip_rect = clip_rects[clip_id];
-        vec2 worldP = vec2(h_clip.x, h_clip.y) + vLocalPos;
-        if (worldP.x < clip_rect.x || worldP.y < clip_rect.y ||
-            worldP.x > clip_rect.x + clip_rect.z ||
-            worldP.y > clip_rect.y + clip_rect.w) {
+        if (vWorldPos.x < clip_rect.x || vWorldPos.y < clip_rect.y ||
+            vWorldPos.x > clip_rect.x + clip_rect.z ||
+            vWorldPos.y > clip_rect.y + clip_rect.w) {
             discard;
         }
     }
@@ -216,6 +216,7 @@ void main() {
     vec4 col = vColor;
     float d = 1000.0;
     float aa = 1.5;
+    float glow_intensity = soa_effects[vInstanceID].glow_intensity;
     
     // Type dispatch - ALL in one shader, one draw call
     // Type 0: STYGIAN_RECT - Rounded rectangle
@@ -279,6 +280,11 @@ void main() {
         d = render_separator(p);
         aa = 1.5;
     }
+    // Type 14: STYGIAN_ICON_CHEVRON - Chevron icon
+    else if (type == 14u) {
+        d = render_icon_chevron(p, center);
+        aa = 1.5;
+    }
     // Type 12: STYGIAN_METABALL_GROUP - Dynamic SDF Blending
     else if (type == 12u) {
         // vBlend holds the smoothness factor (k)
@@ -290,7 +296,7 @@ void main() {
     }
     // Type 15: STYGIAN_LINE - SDF Line Segment
     else if (type == 15u) {
-        vec2 worldP = vec2(h_clip.x, h_clip.y) + vLocalPos;
+        vec2 worldP = vLocalPos;
         vec2 a = vUV.xy;
         vec2 b = vUV.zw;
         float half_thick = vRadius.x;
@@ -299,7 +305,7 @@ void main() {
     }
     // Type 16: STYGIAN_BEZIER - SDF Quadratic Bezier
     else if (type == 16u) {
-        vec2 worldP = vec2(h_clip.x, h_clip.y) + vLocalPos;
+        vec2 worldP = vLocalPos;
         vec2 A = vUV.xy;
         vec2 C = vUV.zw;
         vec2 B = vReserved0.xy;
@@ -309,7 +315,7 @@ void main() {
     }
     // Type 17: STYGIAN_WIRE - SDF Cubic Bezier
     else if (type == 17u) {
-        vec2 worldP = vec2(h_clip.x, h_clip.y) + vLocalPos;
+        vec2 worldP = vLocalPos;
         vec2 A = vUV.xy; 
         vec2 D = vUV.zw;
         vec2 B = vReserved0.xy;
@@ -331,6 +337,13 @@ void main() {
     
     float alpha = 1.0 - smoothstep(-aa, aa, d);
     col.a *= alpha * vBlend;
+    if (glow_intensity > 0.0) {
+        float glow_radius = 4.0 + glow_intensity * 9.0;
+        float glow_falloff = 1.0 - smoothstep(0.0, glow_radius, max(d, 0.0));
+        float glow_alpha = glow_falloff * min(glow_intensity, 1.6) * 0.48;
+        col.rgb += col.rgb * glow_alpha;
+        col.a = max(col.a, glow_alpha);
+    }
     
     if (col.a < 0.01) discard;
     fragColor = apply_output_color_transform(col);

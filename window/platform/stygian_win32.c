@@ -5,12 +5,15 @@
 #ifdef _WIN32
 
 #include "../stygian_window.h"
+#include <windows.h>
+#include <windowsx.h>
+#include <commdlg.h>
 #include <dwmapi.h>
+#include <shlobj.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
-#include <windowsx.h>
+#include <wchar.h>
 #ifdef STYGIAN_VULKAN
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -21,6 +24,22 @@
 // DWM constants
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+
+#ifndef DWMWA_COLOR_DEFAULT
+#define DWMWA_COLOR_DEFAULT 0xFFFFFFFF
+#endif
+
+#ifndef DWMWA_COLOR_NONE
+#define DWMWA_COLOR_NONE 0xFFFFFFFE
 #endif
 
 // ============================================================================
@@ -53,6 +72,7 @@ struct StygianWindow {
   bool keys[STYGIAN_KEY_COUNT];
   bool mouse_buttons[5];
   int mouse_x, mouse_y;
+  bool mouse_tracking;
   uint32_t mods;
 
   // Config
@@ -93,6 +113,110 @@ static void stygian_win32_trace_long_present(StygianWindow *win,
 static uintptr_t stygian_win32_monitor_key(HWND hwnd);
 static void stygian_win32_note_display_change(StygianWindow *win,
                                               bool force);
+static void stygian_win32_apply_corner_preference(StygianWindow *win);
+static void stygian_win32_apply_borderless_dwm_chrome(StygianWindow *win);
+static void stygian_win32_update_window_shape(StygianWindow *win);
+static WCHAR *stygian_win32_utf8_to_wide_alloc(const char *text);
+static bool stygian_win32_wide_to_utf8_copy(const WCHAR *text, char *out_text,
+                                            size_t out_text_cap);
+static WCHAR *stygian_win32_build_filter_block(
+    const StygianNativeFileDialogOptions *options);
+static int CALLBACK stygian_win32_browse_folder_callback(HWND hwnd, UINT msg,
+                                                         LPARAM lparam,
+                                                         LPARAM data);
+
+static WCHAR *stygian_win32_utf8_to_wide_alloc(const char *text) {
+  WCHAR *wide = NULL;
+  int needed = 0;
+  if (!text || !text[0])
+    return NULL;
+  needed = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+  if (needed <= 0)
+    return NULL;
+  wide = (WCHAR *)calloc((size_t)needed, sizeof(WCHAR));
+  if (!wide)
+    return NULL;
+  if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, needed) <= 0) {
+    free(wide);
+    return NULL;
+  }
+  return wide;
+}
+
+static bool stygian_win32_wide_to_utf8_copy(const WCHAR *text, char *out_text,
+                                            size_t out_text_cap) {
+  int needed = 0;
+  if (!out_text || out_text_cap == 0u)
+    return false;
+  out_text[0] = '\0';
+  if (!text || !text[0])
+    return false;
+  needed = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
+  if (needed <= 0)
+    return false;
+  if ((size_t)needed > out_text_cap)
+    return false;
+  return WideCharToMultiByte(CP_UTF8, 0, text, -1, out_text,
+                             (int)out_text_cap, NULL, NULL) > 0;
+}
+
+static WCHAR *stygian_win32_build_filter_block(
+    const StygianNativeFileDialogOptions *options) {
+  size_t total = 0u;
+  WCHAR *block = NULL;
+  WCHAR *dst = NULL;
+  uint32_t i = 0u;
+  if (!options || !options->filters || options->filter_count == 0u)
+    return NULL;
+  for (i = 0u; i < options->filter_count; ++i) {
+    const char *label = options->filters[i].label ? options->filters[i].label
+                                                  : "Files";
+    const char *patterns =
+        options->filters[i].patterns ? options->filters[i].patterns : "*.*";
+    int label_len = MultiByteToWideChar(CP_UTF8, 0, label, -1, NULL, 0);
+    int pattern_len = MultiByteToWideChar(CP_UTF8, 0, patterns, -1, NULL, 0);
+    if (label_len <= 0 || pattern_len <= 0)
+      return NULL;
+    total += (size_t)label_len + (size_t)pattern_len;
+  }
+  total += 1u;
+  block = (WCHAR *)calloc(total, sizeof(WCHAR));
+  if (!block)
+    return NULL;
+  dst = block;
+  for (i = 0u; i < options->filter_count; ++i) {
+    const char *label = options->filters[i].label ? options->filters[i].label
+                                                  : "Files";
+    const char *patterns =
+        options->filters[i].patterns ? options->filters[i].patterns : "*.*";
+    int label_len = MultiByteToWideChar(CP_UTF8, 0, label, -1, dst,
+                                        (int)(total - (size_t)(dst - block)));
+    if (label_len <= 0) {
+      free(block);
+      return NULL;
+    }
+    dst += label_len;
+    int pattern_len = MultiByteToWideChar(CP_UTF8, 0, patterns, -1, dst,
+                                          (int)(total - (size_t)(dst - block)));
+    if (pattern_len <= 0) {
+      free(block);
+      return NULL;
+    }
+    dst += pattern_len;
+  }
+  *dst = L'\0';
+  return block;
+}
+
+static int CALLBACK stygian_win32_browse_folder_callback(HWND hwnd, UINT msg,
+                                                         LPARAM lparam,
+                                                         LPARAM data) {
+  (void)lparam;
+  if (msg == BFFM_INITIALIZED && data != 0) {
+    SendMessageW(hwnd, BFFM_SETSELECTIONW, (WPARAM)TRUE, data);
+  }
+  return 0;
+}
 
 static void stygian_win32_start_live_ticks(StygianWindow *win, uint32_t hz) {
   UINT interval_ms;
@@ -390,6 +514,64 @@ static void stygian_win32_request_gl_swap_resync(StygianWindow *win) {
   }
 }
 
+static void stygian_win32_apply_corner_preference(StygianWindow *win) {
+  DWM_WINDOW_CORNER_PREFERENCE pref = DWMWCP_ROUND;
+  if (!win || !win->hwnd)
+    return;
+  if (win->fullscreen || win->maximized || win->borderless_manual_maximized) {
+    pref = DWMWCP_DONOTROUND;
+  }
+  DwmSetWindowAttribute(win->hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref,
+                        sizeof(pref));
+}
+
+static void stygian_win32_apply_borderless_dwm_chrome(StygianWindow *win) {
+  COLORREF border_color = DWMWA_COLOR_DEFAULT;
+  if (!win || !win->hwnd)
+    return;
+  if (win->flags & STYGIAN_WINDOW_BORDERLESS) {
+    // DWM likes to sneak a bright frame around popup windows on newer Windows
+    // builds. That border fights our own shell chrome and looks cheap fast.
+    border_color = DWMWA_COLOR_NONE;
+  }
+  DwmSetWindowAttribute(win->hwnd, DWMWA_BORDER_COLOR, &border_color,
+                        sizeof(border_color));
+}
+
+static void stygian_win32_update_window_shape(StygianWindow *win) {
+  RECT client;
+  HRGN region;
+  int width;
+  int height;
+  const int corner_radius = 16;
+  if (!win || !win->hwnd)
+    return;
+  if (!(win->flags & STYGIAN_WINDOW_BORDERLESS))
+    return;
+
+  stygian_win32_apply_corner_preference(win);
+  stygian_win32_apply_borderless_dwm_chrome(win);
+  if (win->fullscreen || win->maximized || win->borderless_manual_maximized) {
+    SetWindowRgn(win->hwnd, NULL, TRUE);
+    return;
+  }
+  if (!GetClientRect(win->hwnd, &client))
+    return;
+  width = client.right - client.left;
+  height = client.bottom - client.top;
+  if (width <= 0 || height <= 0)
+    return;
+
+  // Win11 corners are restrained. Bigger than this starts reading like a card.
+  region = CreateRoundRectRgn(0, 0, width + 1, height + 1, corner_radius,
+                              corner_radius);
+  if (!region)
+    return;
+  if (!SetWindowRgn(win->hwnd, region, TRUE)) {
+    DeleteObject(region);
+  }
+}
+
 static void stygian_win32_reset_borderless_present_watch(StygianWindow *win) {
   if (!win)
     return;
@@ -408,6 +590,9 @@ static void stygian_win32_set_mode_flags(StygianWindow *win, bool fullscreen,
   win->minimized = false;
   win->borderless_manual_maximized = borderless_manual_maximized;
   stygian_win32_reset_borderless_present_watch(win);
+  // Fullscreen/restore can change mode without giving us a nice clean resize
+  // message at the point we actually need the region to flip back.
+  stygian_win32_update_window_shape(win);
 }
 
 static void stygian_win32_clear_special_modes_for_bounds(StygianWindow *win) {
@@ -654,6 +839,7 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp,
     win->maximized =
         win->borderless_manual_maximized || (wp == SIZE_MAXIMIZED);
     win->minimized = (wp == SIZE_MINIMIZED);
+    stygian_win32_update_window_shape(win);
     e.type = STYGIAN_EVENT_RESIZE;
     e.resize.width = win->width;
     e.resize.height = win->height;
@@ -676,6 +862,52 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp,
     e.type = STYGIAN_EVENT_TICK;
     push_event(win, &e);
     return 0;
+
+  case WM_NCHITTEST:
+    if ((win->flags & STYGIAN_WINDOW_BORDERLESS) &&
+        (win->flags & STYGIAN_WINDOW_RESIZABLE) && !win->fullscreen &&
+        !win->maximized && !win->borderless_manual_maximized) {
+      RECT wr;
+      POINT pt;
+      int border_x;
+      int border_y;
+      bool left, right, top, bottom;
+      if (!GetWindowRect(hwnd, &wr))
+        break;
+      pt.x = GET_X_LPARAM(lp);
+      pt.y = GET_Y_LPARAM(lp);
+      border_x =
+          GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+      border_y =
+          GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+      if (border_x < 8)
+        border_x = 8;
+      if (border_y < 8)
+        border_y = 8;
+
+      left = pt.x < (wr.left + border_x);
+      right = pt.x >= (wr.right - border_x);
+      top = pt.y < (wr.top + border_y);
+      bottom = pt.y >= (wr.bottom - border_y);
+
+      if (top && left)
+        return HTTOPLEFT;
+      if (top && right)
+        return HTTOPRIGHT;
+      if (bottom && left)
+        return HTBOTTOMLEFT;
+      if (bottom && right)
+        return HTBOTTOMRIGHT;
+      if (left)
+        return HTLEFT;
+      if (right)
+        return HTRIGHT;
+      if (top)
+        return HTTOP;
+      if (bottom)
+        return HTBOTTOM;
+    }
+    break;
 
   case WM_DPICHANGED:
     stygian_win32_note_display_change(win, true);
@@ -734,9 +966,30 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp,
     return 0;
 
   case WM_MOUSEMOVE:
+    if (!win->mouse_tracking) {
+      TRACKMOUSEEVENT tme;
+      memset(&tme, 0, sizeof(tme));
+      tme.cbSize = sizeof(tme);
+      tme.dwFlags = TME_LEAVE;
+      tme.hwndTrack = hwnd;
+      if (TrackMouseEvent(&tme))
+        win->mouse_tracking = true;
+    }
     e.type = STYGIAN_EVENT_MOUSE_MOVE;
     e.mouse_move.x = GET_X_LPARAM(lp);
     e.mouse_move.y = GET_Y_LPARAM(lp);
+    e.mouse_move.dx = e.mouse_move.x - win->mouse_x;
+    e.mouse_move.dy = e.mouse_move.y - win->mouse_y;
+    win->mouse_x = e.mouse_move.x;
+    win->mouse_y = e.mouse_move.y;
+    push_event(win, &e);
+    return 0;
+
+  case WM_MOUSELEAVE:
+    win->mouse_tracking = false;
+    e.type = STYGIAN_EVENT_MOUSE_MOVE;
+    e.mouse_move.x = -1;
+    e.mouse_move.y = -1;
     e.mouse_move.dx = e.mouse_move.x - win->mouse_x;
     e.mouse_move.dy = e.mouse_move.y - win->mouse_y;
     win->mouse_x = e.mouse_move.x;
@@ -953,6 +1206,8 @@ StygianWindow *stygian_window_create(const StygianWindowConfig *config) {
   BOOL dark = TRUE;
   DwmSetWindowAttribute(win->hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
                         sizeof(dark));
+  stygian_win32_apply_corner_preference(win);
+  stygian_win32_apply_borderless_dwm_chrome(win);
 
   // Get device context for graphics backends
   win->hdc = GetDC(win->hwnd);
@@ -972,6 +1227,7 @@ StygianWindow *stygian_window_create(const StygianWindowConfig *config) {
                             ? SW_SHOWMAXIMIZED
                             : SW_SHOW);
   UpdateWindow(win->hwnd);
+  stygian_win32_update_window_shape(win);
 
   return win;
 }
@@ -1780,6 +2036,192 @@ void stygian_mouse_pos(StygianWindow *win, int *x, int *y) {
 }
 
 uint32_t stygian_get_mods(StygianWindow *win) { return win ? win->mods : 0; }
+
+// ============================================================================
+// Native Dialogs
+// ============================================================================
+
+StygianNativeDialogResult stygian_window_native_file_dialog(
+    StygianWindow *win, StygianNativeFileDialogKind kind,
+    const StygianNativeFileDialogOptions *options, char *out_path,
+    size_t out_path_cap) {
+  static const WCHAR all_files_filter[] = L"All Files\0*.*\0\0";
+  WCHAR file_buf[4096];
+  WCHAR folder_buf[MAX_PATH];
+  WCHAR *title_w = NULL;
+  WCHAR *initial_dir_w = NULL;
+  WCHAR *default_name_w = NULL;
+  WCHAR *filter_w = NULL;
+  StygianNativeDialogResult result = STYGIAN_NATIVE_DIALOG_RESULT_CANCEL;
+
+  if (out_path && out_path_cap > 0u)
+    out_path[0] = '\0';
+  if (!win || !win->hwnd || !out_path || out_path_cap == 0u)
+    return STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+
+  title_w = stygian_win32_utf8_to_wide_alloc(options ? options->title : NULL);
+  initial_dir_w =
+      stygian_win32_utf8_to_wide_alloc(options ? options->default_path : NULL);
+  default_name_w =
+      stygian_win32_utf8_to_wide_alloc(options ? options->default_name : NULL);
+
+  if (kind == STYGIAN_NATIVE_FILE_DIALOG_PICK_FOLDER) {
+    BROWSEINFOW bi;
+    PIDLIST_ABSOLUTE pidl = NULL;
+    HRESULT hr = CoInitializeEx(NULL,
+                                COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    bool com_ok = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+    bool need_uninit = SUCCEEDED(hr);
+
+    if (!com_ok) {
+      result = STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+      goto cleanup;
+    }
+
+    memset(folder_buf, 0, sizeof(folder_buf));
+    memset(&bi, 0, sizeof(bi));
+    bi.hwndOwner = win->hwnd;
+    bi.lpszTitle = title_w;
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+    bi.lpfn = stygian_win32_browse_folder_callback;
+    bi.lParam = (LPARAM)initial_dir_w;
+    pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) {
+      result = STYGIAN_NATIVE_DIALOG_RESULT_CANCEL;
+    } else if (!SHGetPathFromIDListW(pidl, folder_buf) ||
+               !stygian_win32_wide_to_utf8_copy(folder_buf, out_path,
+                                                out_path_cap)) {
+      result = STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+    } else {
+      result = STYGIAN_NATIVE_DIALOG_RESULT_OK;
+    }
+    if (pidl)
+      CoTaskMemFree(pidl);
+    if (need_uninit)
+      CoUninitialize();
+    goto cleanup;
+  }
+
+  memset(file_buf, 0, sizeof(file_buf));
+  if (default_name_w) {
+    wcsncpy(file_buf, default_name_w,
+            (sizeof(file_buf) / sizeof(file_buf[0])) - 1u);
+  }
+
+  {
+    OPENFILENAMEW ofn;
+    DWORD flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
+    memset(&ofn, 0, sizeof(ofn));
+    filter_w = stygian_win32_build_filter_block(options);
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = win->hwnd;
+    ofn.lpstrFilter = filter_w ? filter_w : all_files_filter;
+    ofn.lpstrFile = file_buf;
+    ofn.nMaxFile = (DWORD)(sizeof(file_buf) / sizeof(file_buf[0]));
+    ofn.lpstrTitle = title_w;
+    ofn.lpstrInitialDir = initial_dir_w;
+    if (kind == STYGIAN_NATIVE_FILE_DIALOG_OPEN) {
+      flags |= OFN_FILEMUSTEXIST;
+    } else if (kind == STYGIAN_NATIVE_FILE_DIALOG_SAVE &&
+               (!options || options->confirm_overwrite)) {
+      flags |= OFN_OVERWRITEPROMPT;
+    }
+    ofn.Flags = flags;
+
+    if ((kind == STYGIAN_NATIVE_FILE_DIALOG_OPEN && GetOpenFileNameW(&ofn)) ||
+        (kind == STYGIAN_NATIVE_FILE_DIALOG_SAVE && GetSaveFileNameW(&ofn))) {
+      if (stygian_win32_wide_to_utf8_copy(file_buf, out_path, out_path_cap)) {
+        result = STYGIAN_NATIVE_DIALOG_RESULT_OK;
+      } else {
+        result = STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+      }
+    } else if (CommDlgExtendedError() == 0u) {
+      result = STYGIAN_NATIVE_DIALOG_RESULT_CANCEL;
+    } else {
+      result = STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+    }
+  }
+
+cleanup:
+  if (filter_w)
+    free(filter_w);
+  if (default_name_w)
+    free(default_name_w);
+  if (initial_dir_w)
+    free(initial_dir_w);
+  if (title_w)
+    free(title_w);
+  return result;
+}
+
+StygianNativeDialogResult stygian_window_native_message_dialog(
+    StygianWindow *win, const StygianNativeMessageDialogOptions *options) {
+  UINT flags = MB_TASKMODAL;
+  int rc = 0;
+  WCHAR *title_w = NULL;
+  WCHAR *message_w = NULL;
+
+  if (!win || !win->hwnd || !options || !options->message || !options->message[0])
+    return STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+
+  title_w = stygian_win32_utf8_to_wide_alloc(options->title);
+  message_w = stygian_win32_utf8_to_wide_alloc(options->message);
+  if (!message_w) {
+    if (title_w)
+      free(title_w);
+    return STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+  }
+
+  switch (options->kind) {
+  case STYGIAN_NATIVE_MESSAGE_WARNING:
+    flags |= MB_ICONWARNING;
+    break;
+  case STYGIAN_NATIVE_MESSAGE_ERROR:
+    flags |= MB_ICONERROR;
+    break;
+  case STYGIAN_NATIVE_MESSAGE_QUESTION:
+    flags |= MB_ICONQUESTION;
+    break;
+  case STYGIAN_NATIVE_MESSAGE_INFO:
+  default:
+    flags |= MB_ICONINFORMATION;
+    break;
+  }
+
+  switch (options->buttons) {
+  case STYGIAN_NATIVE_MESSAGE_OK_CANCEL:
+    flags |= MB_OKCANCEL;
+    break;
+  case STYGIAN_NATIVE_MESSAGE_YES_NO:
+    flags |= MB_YESNO;
+    break;
+  case STYGIAN_NATIVE_MESSAGE_YES_NO_CANCEL:
+    flags |= MB_YESNOCANCEL;
+    break;
+  case STYGIAN_NATIVE_MESSAGE_OK:
+  default:
+    flags |= MB_OK;
+    break;
+  }
+
+  rc = MessageBoxW(win->hwnd, message_w, title_w, flags);
+  if (title_w)
+    free(title_w);
+  free(message_w);
+
+  switch (rc) {
+  case IDOK:
+    return STYGIAN_NATIVE_DIALOG_RESULT_OK;
+  case IDYES:
+    return STYGIAN_NATIVE_DIALOG_RESULT_YES;
+  case IDNO:
+    return STYGIAN_NATIVE_DIALOG_RESULT_NO;
+  case IDCANCEL:
+    return STYGIAN_NATIVE_DIALOG_RESULT_CANCEL;
+  default:
+    return STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+  }
+}
 
 // ============================================================================
 // Clipboard Implementation

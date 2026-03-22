@@ -383,7 +383,7 @@ struct StygianAP {
   GLuint current_program;
   GLuint current_vao;
   GLuint current_shader_storage_buffer;
-  GLuint current_ssbo_bindings[7];
+  GLuint current_ssbo_bindings[8];
   bool sampler_uniforms_dirty;
   bool output_uniforms_dirty;
   GLuint bound_image_textures[16];
@@ -424,14 +424,16 @@ struct StygianAP {
   int raw_target_width;
   int raw_target_height;
 
-  // SoA SSBOs (3 buffers: hot, appearance, effects)
+  // SoA SSBOs (4 buffers: hot, appearance, effects, transform)
   GLuint soa_ssbo_hot;
   GLuint soa_ssbo_appearance;
   GLuint soa_ssbo_effects;
+  GLuint soa_ssbo_transform;
   // GPU-side version tracking per chunk
   uint32_t *gpu_hot_versions;
   uint32_t *gpu_appearance_versions;
   uint32_t *gpu_effects_versions;
+  uint32_t *gpu_transform_versions;
   uint32_t soa_chunk_count;
 
   // Remapped hot stream submitted to GPU (texture handles -> sampler slots).
@@ -1006,6 +1008,10 @@ static void stygian_ap_bind_scene_buffers(StygianAP *ap) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ap->soa_ssbo_effects);
     ap->current_ssbo_bindings[6] = ap->soa_ssbo_effects;
   }
+  if (ap->current_ssbo_bindings[7] != ap->soa_ssbo_transform) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, ap->soa_ssbo_transform);
+    ap->current_ssbo_bindings[7] = ap->soa_ssbo_transform;
+  }
 }
 
 static void stygian_ap_bind_shader_storage_buffer_if_needed(StygianAP *ap,
@@ -1191,7 +1197,7 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
                NULL, GL_DYNAMIC_DRAW);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ap->clip_ssbo);
 
-  // Create SoA SSBOs (bindings 4, 5, 6)
+  // Create SoA SSBOs (bindings 4, 5, 6, 7)
   glGenBuffers(1, &ap->soa_ssbo_hot);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, ap->soa_ssbo_hot);
   glBufferData(GL_SHADER_STORAGE_BUFFER,
@@ -1211,6 +1217,13 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
                ap->max_elements * sizeof(StygianSoAEffects), NULL,
                GL_DYNAMIC_DRAW);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ap->soa_ssbo_effects);
+
+  glGenBuffers(1, &ap->soa_ssbo_transform);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, ap->soa_ssbo_transform);
+  glBufferData(GL_SHADER_STORAGE_BUFFER,
+               ap->max_elements * sizeof(StygianSoATransform), NULL,
+               GL_DYNAMIC_DRAW);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, ap->soa_ssbo_transform);
 
   // Optional GPU timing queries (GL_TIME_ELAPSED).
   ap->gpu_query_initialized =
@@ -1237,12 +1250,16 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
         (uint32_t *)ap_alloc(ap, cc * sizeof(uint32_t), _Alignof(uint32_t));
     ap->gpu_effects_versions =
         (uint32_t *)ap_alloc(ap, cc * sizeof(uint32_t), _Alignof(uint32_t));
+    ap->gpu_transform_versions =
+        (uint32_t *)ap_alloc(ap, cc * sizeof(uint32_t), _Alignof(uint32_t));
     if (ap->gpu_hot_versions)
       memset(ap->gpu_hot_versions, 0, cc * sizeof(uint32_t));
     if (ap->gpu_appearance_versions)
       memset(ap->gpu_appearance_versions, 0, cc * sizeof(uint32_t));
     if (ap->gpu_effects_versions)
       memset(ap->gpu_effects_versions, 0, cc * sizeof(uint32_t));
+    if (ap->gpu_transform_versions)
+      memset(ap->gpu_transform_versions, 0, cc * sizeof(uint32_t));
   }
 
   ap->submit_hot = (StygianSoAHot *)ap_alloc(
@@ -1287,6 +1304,8 @@ void stygian_ap_destroy(StygianAP *ap) {
     glDeleteBuffers(1, &ap->soa_ssbo_appearance);
   if (ap->soa_ssbo_effects)
     glDeleteBuffers(1, &ap->soa_ssbo_effects);
+  if (ap->soa_ssbo_transform)
+    glDeleteBuffers(1, &ap->soa_ssbo_transform);
   if (ap->gpu_query_initialized) {
     glDeleteQueries(STYGIAN_GL_GPU_QUERY_SLOTS, ap->gpu_queries);
     memset(ap->gpu_queries, 0, sizeof(ap->gpu_queries));
@@ -1301,10 +1320,12 @@ void stygian_ap_destroy(StygianAP *ap) {
   ap_free(ap, ap->gpu_hot_versions);
   ap_free(ap, ap->gpu_appearance_versions);
   ap_free(ap, ap->gpu_effects_versions);
+  ap_free(ap, ap->gpu_transform_versions);
   ap_free(ap, ap->submit_hot);
   ap->gpu_hot_versions = NULL;
   ap->gpu_appearance_versions = NULL;
   ap->gpu_effects_versions = NULL;
+  ap->gpu_transform_versions = NULL;
   ap->submit_hot = NULL;
 
   if (ap->gl_context) {
@@ -1545,10 +1566,12 @@ void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
 void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
                            const StygianSoAAppearance *appearance,
                            const StygianSoAEffects *effects,
+                           const StygianSoATransform *transform,
                            uint32_t element_count,
                            const StygianBufferChunk *chunks,
                            uint32_t chunk_count, uint32_t chunk_size) {
-  if (!ap || !hot || !appearance || !effects || !chunks || element_count == 0)
+  if (!ap || !hot || !appearance || !effects || !transform || !chunks ||
+      element_count == 0)
     return;
   const StygianSoAHot *hot_src = ap->submit_hot_src ? ap->submit_hot_src : hot;
 
@@ -1631,6 +1654,30 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
       ap->gpu_effects_versions[ci] = c->effects_version;
     }
   }
+
+  for (uint32_t ci = 0; ci < chunk_count; ci++) {
+    const StygianBufferChunk *c = &chunks[ci];
+    uint32_t base = ci * chunk_size;
+    if (ap->gpu_transform_versions &&
+        c->transform_version != ap->gpu_transform_versions[ci]) {
+      uint32_t dmin = c->transform_dirty_min;
+      uint32_t dmax = c->transform_dirty_max;
+      if (dmin <= dmax) {
+        uint32_t abs_min = base + dmin;
+        uint32_t abs_max = base + dmax;
+        if (abs_max >= element_count)
+          abs_max = element_count - 1;
+        if (abs_min < element_count) {
+          uint32_t range_count = abs_max - abs_min + 1;
+          stygian_ap_upload_range(ap, &bound_upload_buffer,
+                                  ap->soa_ssbo_transform, abs_min, range_count,
+                                  sizeof(StygianSoATransform),
+                                  &transform[abs_min]);
+        }
+      }
+      ap->gpu_transform_versions[ci] = c->transform_version;
+    }
+  }
 }
 
 void stygian_ap_draw(StygianAP *ap) {
@@ -1692,6 +1739,10 @@ void stygian_ap_set_present_enabled(StygianAP *ap, bool enable) {
   ap->present_enabled = enable;
   if (enable && glBindFramebuffer) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // The raw target only exists to keep no-present frames off the window
+    // backbuffer. Once present comes back, hanging onto a fullscreen texture is
+    // just dead weight.
+    stygian_ap_raw_target_release(ap);
   }
 }
 

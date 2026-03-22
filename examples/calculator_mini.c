@@ -89,7 +89,7 @@ int main(void) {
     return 1;
 
   StygianFont font =
-      stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+      stygian_get_default_font(ctx);
   StygianMiniPerfHarness perf;
   bool first_frame = true;
   bool show_perf = true;

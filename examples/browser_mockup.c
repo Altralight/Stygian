@@ -26,6 +26,25 @@ typedef struct BrowserTab {
   const char *title;
 } BrowserTab;
 
+typedef struct BrowserLayout {
+  float shell_x, shell_y, shell_w, shell_h;
+  float shell_radius;
+  float titlebar_h;
+  float rail_x, rail_y, rail_w, rail_h;
+  float page_x, page_y, page_w, page_h;
+  float address_x, address_y, address_w, address_h;
+  float min_x, max_x, close_x;
+  float control_y, control_w, control_h, control_gap;
+  float controls_start, controls_end;
+} BrowserLayout;
+
+typedef enum BrowserCaptionAction {
+  BROWSER_CAPTION_NONE = 0,
+  BROWSER_CAPTION_MINIMIZE,
+  BROWSER_CAPTION_MAXIMIZE,
+  BROWSER_CAPTION_CLOSE,
+} BrowserCaptionAction;
+
 static const BrowserTab k_tabs[] = {
     {.label = "H", .url = "https://fieldengine.space/", .title = "Home"},
     {.label = "B", .url = "https://fieldengine.space/bench", .title = "Bench"},
@@ -35,16 +54,6 @@ static const BrowserTab k_tabs[] = {
 
 static int browser_tab_count(void) {
   return (int)(sizeof(k_tabs) / sizeof(k_tabs[0]));
-}
-
-static void browser_copy_text(char *dst, int cap, const char *src) {
-  if (!dst || cap <= 0)
-    return;
-  if (!src) {
-    dst[0] = '\0';
-    return;
-  }
-  snprintf(dst, (size_t)cap, "%s", src);
 }
 
 static void browser_text(StygianContext *ctx, StygianFont font, const char *text,
@@ -73,13 +82,146 @@ static bool browser_point_in_rect(float px, float py, float x, float y, float w,
   return px >= x && px < (x + w) && py >= y && py < (y + h);
 }
 
+static void browser_compute_layout(BrowserLayout *layout, int width, int height,
+                                   const StygianTitlebarHints *hints) {
+  float shell_margin = 8.0f;
+  float inner_pad = 10.0f;
+
+  memset(layout, 0, sizeof(*layout));
+  layout->shell_x = shell_margin;
+  layout->shell_y = shell_margin;
+  layout->shell_w = (float)width - shell_margin * 2.0f;
+  layout->shell_h = (float)height - shell_margin * 2.0f;
+  layout->shell_radius = 26.0f;
+  layout->titlebar_h = hints->recommended_titlebar_height > 0.0f
+                           ? hints->recommended_titlebar_height + 4.0f
+                           : 44.0f;
+  layout->control_w = hints->recommended_button_width > 0.0f
+                          ? hints->recommended_button_width + 4.0f
+                          : 34.0f;
+  layout->control_h = hints->recommended_button_height > 0.0f
+                          ? hints->recommended_button_height + 2.0f
+                          : 28.0f;
+  layout->control_gap = hints->recommended_button_gap > 0.0f
+                            ? hints->recommended_button_gap + 2.0f
+                            : 8.0f;
+  layout->control_y =
+      layout->shell_y + 10.0f + (layout->titlebar_h - layout->control_h) * 0.5f;
+
+  if (hints->button_order == STYGIAN_TITLEBAR_BUTTONS_LEFT) {
+    layout->close_x = layout->shell_x + 14.0f;
+    layout->min_x =
+        layout->close_x + layout->control_w + layout->control_gap;
+    layout->max_x = layout->min_x + layout->control_w + layout->control_gap;
+    layout->controls_start = layout->close_x;
+    layout->controls_end = layout->max_x + layout->control_w;
+    layout->address_x = layout->controls_end + 14.0f;
+  } else {
+    layout->close_x =
+        layout->shell_x + layout->shell_w - 14.0f - layout->control_w;
+    layout->max_x = layout->close_x - layout->control_gap - layout->control_w;
+    layout->min_x = layout->max_x - layout->control_gap - layout->control_w;
+    layout->controls_start = layout->min_x;
+    layout->controls_end = layout->close_x + layout->control_w;
+    layout->address_x = layout->shell_x + 78.0f;
+  }
+
+  layout->address_y = layout->shell_y + 10.0f;
+  layout->address_h = 30.0f;
+  layout->address_w = layout->controls_start - layout->address_x - 12.0f;
+  if (layout->address_w < 240.0f)
+    layout->address_w = 240.0f;
+
+  layout->rail_x = layout->shell_x + inner_pad;
+  layout->rail_y = layout->shell_y + layout->titlebar_h + inner_pad;
+  layout->rail_w = 52.0f;
+  layout->rail_h =
+      layout->shell_h - layout->titlebar_h - inner_pad * 2.0f;
+
+  layout->page_x = layout->rail_x + layout->rail_w + 10.0f;
+  layout->page_y = layout->rail_y;
+  layout->page_w = layout->shell_x + layout->shell_w - inner_pad - layout->page_x;
+  layout->page_h = layout->shell_y + layout->shell_h - inner_pad - layout->page_y;
+}
+
+static BrowserCaptionAction browser_hit_caption_button(
+    const BrowserLayout *layout, float px, float py) {
+  if (browser_point_in_rect(px, py, layout->min_x, layout->control_y,
+                            layout->control_w, layout->control_h)) {
+    return BROWSER_CAPTION_MINIMIZE;
+  }
+  if (browser_point_in_rect(px, py, layout->max_x, layout->control_y,
+                            layout->control_w, layout->control_h)) {
+    return BROWSER_CAPTION_MAXIMIZE;
+  }
+  if (browser_point_in_rect(px, py, layout->close_x, layout->control_y,
+                            layout->control_w, layout->control_h)) {
+    return BROWSER_CAPTION_CLOSE;
+  }
+  return BROWSER_CAPTION_NONE;
+}
+
+static void browser_draw_caption_button(StygianContext *ctx, float x, float y,
+                                        float w, float h, bool hovered,
+                                        BrowserCaptionAction action,
+                                        bool maximized) {
+  float bg = hovered ? 0.18f : 0.12f;
+  float icon = hovered ? 0.95f : 0.83f;
+  float left = x + 10.0f;
+  float right = x + w - 10.0f;
+  float top = y + 8.0f;
+  float bottom = y + h - 8.0f;
+  float mid_y = y + h * 0.5f;
+
+  if (action == BROWSER_CAPTION_CLOSE && hovered) {
+    stygian_rect_rounded(ctx, x, y, w, h, 0.36f, 0.17f, 0.18f, 1.0f, 10.0f);
+    icon = 0.98f;
+  } else {
+    stygian_rect_rounded(ctx, x, y, w, h, bg, bg, bg + 0.01f, 1.0f, 10.0f);
+  }
+
+  if (action == BROWSER_CAPTION_MINIMIZE) {
+    stygian_line(ctx, left + 1.0f, mid_y + 3.0f, right - 1.0f, mid_y + 3.0f,
+                 1.5f, icon, icon, icon, 1.0f);
+  } else if (action == BROWSER_CAPTION_MAXIMIZE) {
+    if (maximized) {
+      stygian_line(ctx, left + 3.0f, top + 3.0f, right - 2.0f, top + 3.0f, 1.4f,
+                   icon, icon, icon, 1.0f);
+      stygian_line(ctx, right - 2.0f, top + 3.0f, right - 2.0f, bottom - 3.0f,
+                   1.4f, icon, icon, icon, 1.0f);
+      stygian_line(ctx, left + 3.0f, bottom - 3.0f, right - 2.0f,
+                   bottom - 3.0f, 1.4f, icon, icon, icon, 1.0f);
+      stygian_line(ctx, left + 3.0f, top + 3.0f, left + 3.0f, bottom - 3.0f,
+                   1.4f, icon, icon, icon, 1.0f);
+      stygian_line(ctx, left, top + 7.0f, right - 5.0f, top + 7.0f, 1.4f, icon,
+                   icon, icon, 1.0f);
+      stygian_line(ctx, left, top + 7.0f, left, bottom, 1.4f, icon, icon, icon,
+                   1.0f);
+    } else {
+      stygian_line(ctx, left + 1.0f, top + 1.0f, right - 1.0f, top + 1.0f, 1.4f,
+                   icon, icon, icon, 1.0f);
+      stygian_line(ctx, right - 1.0f, top + 1.0f, right - 1.0f, bottom - 1.0f,
+                   1.4f, icon, icon, icon, 1.0f);
+      stygian_line(ctx, left + 1.0f, bottom - 1.0f, right - 1.0f,
+                   bottom - 1.0f, 1.4f, icon, icon, icon, 1.0f);
+      stygian_line(ctx, left + 1.0f, top + 1.0f, left + 1.0f, bottom - 1.0f,
+                   1.4f, icon, icon, icon, 1.0f);
+    }
+  } else if (action == BROWSER_CAPTION_CLOSE) {
+    stygian_line(ctx, left + 1.0f, top + 1.0f, right - 1.0f, bottom - 1.0f, 1.5f,
+                 icon, icon, icon, 1.0f);
+    stygian_line(ctx, right - 1.0f, top + 1.0f, left + 1.0f, bottom - 1.0f, 1.5f,
+                 icon, icon, icon, 1.0f);
+  }
+}
+
 int main(void) {
   const StygianScopeId k_scope_shell = 0x4601u;
   const StygianScopeId k_scope_perf =
       STYGIAN_OVERLAY_SCOPE_BASE | (StygianScopeId)0x4602u;
 
   StygianWindowConfig win_cfg = {
-      .title = "Aster Browser (Stygian Mockup)",
+      .title = "Aster",
       .width = 1440,
       .height = 920,
       .flags = STYGIAN_BROWSER_WINDOW_FLAGS,
@@ -102,12 +244,13 @@ int main(void) {
   stygian_set_vsync(ctx, false);
 
   StygianFont font =
-      stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+      stygian_get_default_font(ctx);
   StygianMiniPerfHarness perf;
   bool first_frame = true;
   bool show_perf = false;
   int active_tab = 0;
-  char address_buffer[256];
+  float mouse_x = 0.0f;
+  float mouse_y = 0.0f;
 
   const StygianWidgetStyle k_rail_idle = {
       .bg_color = {0.12f, 0.12f, 0.13f, 1.0f},
@@ -125,71 +268,25 @@ int main(void) {
       .border_radius = 14.0f,
       .padding = 8.0f,
   };
-  const StygianWidgetStyle k_small_button = {
-      .bg_color = {0.12f, 0.12f, 0.13f, 1.0f},
-      .hover_color = {0.16f, 0.16f, 0.17f, 1.0f},
-      .active_color = {0.19f, 0.19f, 0.20f, 1.0f},
-      .text_color = {0.90f, 0.90f, 0.92f, 1.0f},
-      .border_radius = 12.0f,
-      .padding = 8.0f,
-  };
 
   stygian_mini_perf_init(&perf, "browser_mockup");
   perf.widget.renderer_name = STYGIAN_BROWSER_RENDERER_NAME;
-  browser_copy_text(address_buffer, (int)sizeof(address_buffer),
-                    k_tabs[active_tab].url);
 
   while (!stygian_window_should_close(window)) {
     StygianEvent event;
     StygianTitlebarHints titlebar_hints;
+    BrowserLayout layout;
     bool event_mutated = false;
     bool event_requested = false;
     bool event_eval_requested = false;
     bool shell_changed = false;
     uint32_t wait_ms = stygian_next_repaint_wait_ms(ctx, 250u);
-    float titlebar_height;
-    float titlebar_button_w;
-    float titlebar_button_h;
-    float titlebar_button_gap;
-    float titlebar_button_y;
-    float close_x;
-    float max_x;
-    float min_x;
-    float controls_start;
-    float controls_end;
-    float address_x;
-    float address_w;
+    int frame_width;
+    int frame_height;
 
     stygian_window_get_titlebar_hints(window, &titlebar_hints);
-    titlebar_height = titlebar_hints.recommended_titlebar_height > 0.0f
-                          ? titlebar_hints.recommended_titlebar_height
-                          : 36.0f;
-    titlebar_button_w = titlebar_hints.recommended_button_width > 0.0f
-                            ? titlebar_hints.recommended_button_width
-                            : 28.0f;
-    titlebar_button_h = titlebar_hints.recommended_button_height > 0.0f
-                            ? titlebar_hints.recommended_button_height
-                            : 24.0f;
-    titlebar_button_gap = titlebar_hints.recommended_button_gap > 0.0f
-                              ? titlebar_hints.recommended_button_gap
-                              : 6.0f;
-    titlebar_button_y = 12.0f + (titlebar_height - titlebar_button_h) * 0.5f;
-    if (titlebar_hints.button_order == STYGIAN_TITLEBAR_BUTTONS_LEFT) {
-      close_x = 16.0f;
-      min_x = close_x + titlebar_button_w + titlebar_button_gap;
-      max_x = min_x + titlebar_button_w + titlebar_button_gap;
-      controls_start = close_x;
-      controls_end = max_x + titlebar_button_w;
-      address_x = controls_end + 16.0f;
-    } else {
-      close_x = 1440.0f; // overwritten once we know frame width
-      min_x = 0.0f;
-      max_x = 0.0f;
-      controls_start = 0.0f;
-      controls_end = 0.0f;
-      address_x = 94.0f;
-    }
-    address_w = 0.0f;
+    stygian_window_get_size(window, &frame_width, &frame_height);
+    browser_compute_layout(&layout, frame_width, frame_height, &titlebar_hints);
 
     stygian_widgets_begin_frame(ctx);
 
@@ -202,6 +299,14 @@ int main(void) {
         event_requested = true;
       if (impact & STYGIAN_IMPACT_REQUEST_EVAL)
         event_eval_requested = true;
+      if (event.type == STYGIAN_EVENT_MOUSE_MOVE) {
+        mouse_x = (float)event.mouse_move.x;
+        mouse_y = (float)event.mouse_move.y;
+      } else if (event.type == STYGIAN_EVENT_MOUSE_DOWN ||
+                 event.type == STYGIAN_EVENT_MOUSE_UP) {
+        mouse_x = (float)event.mouse_button.x;
+        mouse_y = (float)event.mouse_button.y;
+      }
       if (event.type == STYGIAN_EVENT_KEY_DOWN && !event.key.repeat) {
         if (event.key.key == STYGIAN_KEY_F1) {
           show_perf = !show_perf;
@@ -214,18 +319,28 @@ int main(void) {
         }
       } else if (event.type == STYGIAN_EVENT_MOUSE_DOWN &&
                  event.mouse_button.button == STYGIAN_MOUSE_LEFT) {
-        float mouse_x = (float)event.mouse_button.x;
-        float mouse_y = (float)event.mouse_button.y;
-        bool in_titlebar = browser_point_in_rect(mouse_x, mouse_y, 12.0f, 12.0f,
-                                                 2000.0f, titlebar_height);
-        bool in_controls = browser_point_in_rect(mouse_x, mouse_y, controls_start,
-                                                 titlebar_button_y,
-                                                 controls_end - controls_start,
-                                                 titlebar_button_h);
-        bool in_address = browser_point_in_rect(mouse_x, mouse_y, address_x,
-                                                titlebar_button_y - 1.0f,
-                                                address_w, 32.0f);
-        if (in_titlebar && !in_controls && !in_address) {
+        BrowserCaptionAction action =
+            browser_hit_caption_button(&layout, mouse_x, mouse_y);
+        bool in_titlebar = browser_point_in_rect(mouse_x, mouse_y, layout.shell_x,
+                                                 layout.shell_y, layout.shell_w,
+                                                 layout.titlebar_h + 10.0f);
+        if (action == BROWSER_CAPTION_MINIMIZE) {
+          stygian_window_minimize(window);
+          shell_changed = true;
+          event_requested = true;
+        } else if (action == BROWSER_CAPTION_MAXIMIZE) {
+          if (stygian_window_is_maximized(window)) {
+            stygian_window_restore(window);
+          } else {
+            stygian_window_maximize(window);
+          }
+          shell_changed = true;
+          event_requested = true;
+        } else if (action == BROWSER_CAPTION_CLOSE) {
+          stygian_window_request_close(window);
+          shell_changed = true;
+          event_requested = true;
+        } else if (in_titlebar) {
           if (event.mouse_button.clicks >= 2) {
             stygian_window_titlebar_double_click(window);
           } else {
@@ -250,6 +365,14 @@ int main(void) {
           event_requested = true;
         if (impact & STYGIAN_IMPACT_REQUEST_EVAL)
           event_eval_requested = true;
+        if (event.type == STYGIAN_EVENT_MOUSE_MOVE) {
+          mouse_x = (float)event.mouse_move.x;
+          mouse_y = (float)event.mouse_move.y;
+        } else if (event.type == STYGIAN_EVENT_MOUSE_DOWN ||
+                   event.type == STYGIAN_EVENT_MOUSE_UP) {
+          mouse_x = (float)event.mouse_button.x;
+          mouse_y = (float)event.mouse_button.y;
+        }
         if (event.type == STYGIAN_EVENT_KEY_DOWN && !event.key.repeat) {
           if (event.key.key == STYGIAN_KEY_F1) {
             show_perf = !show_perf;
@@ -262,18 +385,29 @@ int main(void) {
           }
         } else if (event.type == STYGIAN_EVENT_MOUSE_DOWN &&
                    event.mouse_button.button == STYGIAN_MOUSE_LEFT) {
-          float mouse_x = (float)event.mouse_button.x;
-          float mouse_y = (float)event.mouse_button.y;
-          bool in_titlebar = browser_point_in_rect(mouse_x, mouse_y, 12.0f, 12.0f,
-                                                   2000.0f, titlebar_height);
-          bool in_controls = browser_point_in_rect(mouse_x, mouse_y, controls_start,
-                                                   titlebar_button_y,
-                                                   controls_end - controls_start,
-                                                   titlebar_button_h);
-          bool in_address = browser_point_in_rect(mouse_x, mouse_y, address_x,
-                                                  titlebar_button_y - 1.0f,
-                                                  address_w, 32.0f);
-          if (in_titlebar && !in_controls && !in_address) {
+          BrowserCaptionAction action =
+              browser_hit_caption_button(&layout, mouse_x, mouse_y);
+          bool in_titlebar =
+              browser_point_in_rect(mouse_x, mouse_y, layout.shell_x,
+                                    layout.shell_y, layout.shell_w,
+                                    layout.titlebar_h + 10.0f);
+          if (action == BROWSER_CAPTION_MINIMIZE) {
+            stygian_window_minimize(window);
+            shell_changed = true;
+            event_requested = true;
+          } else if (action == BROWSER_CAPTION_MAXIMIZE) {
+            if (stygian_window_is_maximized(window)) {
+              stygian_window_restore(window);
+            } else {
+              stygian_window_maximize(window);
+            }
+            shell_changed = true;
+            event_requested = true;
+          } else if (action == BROWSER_CAPTION_CLOSE) {
+            stygian_window_request_close(window);
+            shell_changed = true;
+            event_requested = true;
+          } else if (in_titlebar) {
             if (event.mouse_button.clicks >= 2) {
               stygian_window_titlebar_double_click(window);
             } else {
@@ -294,126 +428,65 @@ int main(void) {
       bool render_frame = first_frame || event_mutated || repaint_pending;
       bool eval_only_frame =
           (!render_frame && (event_eval_requested || event_requested));
-      int width, height;
-      float rail_x = 12.0f;
-      float rail_y;
-      float rail_w = 58.0f;
-      float rail_h;
-      float bar_x = 12.0f;
-      float bar_y = 12.0f;
-      float bar_w;
-      float page_x = 82.0f;
-      float page_y;
-      float page_w;
-      float page_h;
+      int width = frame_width;
+      int height = frame_height;
 
       if (!render_frame && !eval_only_frame)
         continue;
       first_frame = false;
 
       stygian_window_get_size(window, &width, &height);
-      if (titlebar_hints.button_order == STYGIAN_TITLEBAR_BUTTONS_LEFT) {
-        close_x = 16.0f;
-        min_x = close_x + titlebar_button_w + titlebar_button_gap;
-        max_x = min_x + titlebar_button_w + titlebar_button_gap;
-        controls_start = close_x;
-        controls_end = max_x + titlebar_button_w;
-        address_x = controls_end + 16.0f;
-      } else {
-        close_x = (float)width - 16.0f - titlebar_button_w;
-        max_x = close_x - titlebar_button_gap - titlebar_button_w;
-        min_x = max_x - titlebar_button_gap - titlebar_button_w;
-        controls_start = min_x;
-        controls_end = close_x + titlebar_button_w;
-        address_x = 90.0f;
-      }
-      address_w = (float)width - address_x - (controls_end - controls_start) - 34.0f;
-      if (address_w < 220.0f)
-        address_w = 220.0f;
-      rail_y = 12.0f + titlebar_height + 10.0f;
-      rail_h = (float)height - rail_y - 12.0f;
-      bar_w = (float)width - 24.0f;
-      page_w = (float)width - 94.0f;
-      page_y = rail_y;
-      page_h = (float)height - page_y - 12.0f;
+      browser_compute_layout(&layout, width, height, &titlebar_hints);
 
       stygian_begin_frame_intent(
           ctx, width, height,
           eval_only_frame ? STYGIAN_FRAME_EVAL_ONLY : STYGIAN_FRAME_RENDER);
 
       stygian_scope_begin(ctx, k_scope_shell);
-      stygian_rect(ctx, 0.0f, 0.0f, (float)width, (float)height, 0.07f, 0.07f,
-                   0.08f, 1.0f);
-
-      stygian_rect_rounded(ctx, bar_x, bar_y, bar_w, titlebar_height, 0.10f,
-                           0.10f, 0.11f, 1.0f, 22.0f);
-      stygian_rect_rounded(ctx, rail_x, rail_y, rail_w, rail_h, 0.10f, 0.10f,
-                           0.11f, 1.0f, 22.0f);
-      stygian_rect_rounded(ctx, page_x, page_y, page_w, page_h, 0.11f, 0.11f,
-                           0.12f, 1.0f, 22.0f);
-      stygian_rect_rounded(ctx, page_x + 1.0f, page_y + 1.0f, page_w - 2.0f,
-                           38.0f, 0.13f, 0.13f, 0.14f, 1.0f, 21.0f);
+      stygian_rect(ctx, 0.0f, 0.0f, (float)width, (float)height, 0.03f, 0.03f,
+                   0.04f, 1.0f);
+      stygian_rect_rounded(ctx, layout.shell_x, layout.shell_y, layout.shell_w,
+                           layout.shell_h, 0.08f, 0.08f, 0.09f, 1.0f,
+                           layout.shell_radius);
+      stygian_rect_rounded(ctx, layout.rail_x, layout.rail_y, layout.rail_w,
+                           layout.rail_h, 0.06f, 0.06f, 0.07f, 1.0f, 20.0f);
+      stygian_rect_rounded(ctx, layout.page_x, layout.page_y, layout.page_w,
+                           layout.page_h, 0.09f, 0.09f, 0.10f, 1.0f, 20.0f);
+      stygian_rect_rounded(ctx, layout.address_x, layout.address_y,
+                           layout.address_w, layout.address_h, 0.16f, 0.16f,
+                           0.17f, 1.0f, 14.0f);
 
       for (int i = 0; i < browser_tab_count(); ++i) {
-        float tab_y = rail_y + 78.0f + (float)i * 56.0f;
+        float tab_y = layout.rail_y + 18.0f + (float)i * 54.0f;
         const StygianWidgetStyle *style =
             (i == active_tab) ? &k_rail_active : &k_rail_idle;
-        if (browser_button(ctx, font, k_tabs[i].label, rail_x + 9.0f, tab_y,
+        if (browser_button(ctx, font, k_tabs[i].label, layout.rail_x + 6.0f,
+                           tab_y,
                            40.0f, 40.0f, style)) {
           active_tab = i;
-          browser_copy_text(address_buffer, (int)sizeof(address_buffer),
-                            k_tabs[active_tab].url);
           shell_changed = true;
         }
       }
 
-      browser_text(ctx, font, "A", rail_x + 21.0f, rail_y + 22.0f, 18.0f, 0.96f,
-                   0.96f, 0.97f, 1.0f);
-      browser_text(ctx, font, "Aster", bar_x + 18.0f, bar_y + 10.0f, 15.0f,
-                   0.90f, 0.90f, 0.92f, 1.0f);
-      browser_text(ctx, font, k_tabs[active_tab].title, page_x + 22.0f,
-                   page_y + 12.0f, 14.0f, 0.92f, 0.92f, 0.93f, 1.0f);
-      browser_text(ctx, font, STYGIAN_BROWSER_RENDERER_NAME, rail_x + 12.0f,
-                   rail_y + rail_h - 28.0f, 10.0f, 0.56f, 0.56f, 0.59f, 1.0f);
+      browser_text(ctx, font, k_tabs[active_tab].url, layout.address_x + 12.0f,
+                   layout.address_y + 7.0f, 13.0f, 0.84f, 0.85f, 0.86f, 1.0f);
 
-      browser_text(ctx, font, "Address", address_x - 68.0f, bar_y + 11.0f, 11.0f,
-                   0.56f, 0.56f, 0.59f, 1.0f);
-      if (stygian_text_input(ctx, font, address_x, titlebar_button_y - 1.0f,
-                             address_w, 30.0f, address_buffer,
-                             (int)sizeof(address_buffer))) {
-        shell_changed = true;
-      }
-      if (browser_button(ctx, font, "-", min_x, titlebar_button_y,
-                         titlebar_button_w, titlebar_button_h, &k_small_button)) {
-        shell_changed = true;
-        stygian_window_minimize(window);
-      }
-      if (browser_button(ctx, font,
-                         stygian_window_is_maximized(window) ? "R" : "[]", max_x,
-                         titlebar_button_y, titlebar_button_w, titlebar_button_h,
-                         &k_small_button)) {
-        shell_changed = true;
-        if (stygian_window_is_maximized(window)) {
-          stygian_window_restore(window);
-        } else {
-          stygian_window_maximize(window);
-        }
-      }
-      if (browser_button(ctx, font, "X", close_x, titlebar_button_y,
-                         titlebar_button_w, titlebar_button_h, &k_small_button)) {
-        shell_changed = true;
-        stygian_window_request_close(window);
-      }
-      if (browser_button(ctx, font, "F1", rail_x + 9.0f, rail_y + rail_h - 58.0f,
-                         40.0f, 30.0f, &k_small_button)) {
-        show_perf = !show_perf;
-        shell_changed = true;
-      }
-
-      browser_text(ctx, font, k_tabs[active_tab].url, page_x + 22.0f,
-                   page_y + 54.0f, 12.0f, 0.58f, 0.58f, 0.61f, 1.0f);
-      stygian_rect(ctx, page_x + 22.0f, page_y + 74.0f, page_w - 44.0f, 1.0f,
-                   0.18f, 0.18f, 0.20f, 1.0f);
+      browser_draw_caption_button(
+          ctx, layout.min_x, layout.control_y, layout.control_w, layout.control_h,
+          browser_point_in_rect(mouse_x, mouse_y, layout.min_x, layout.control_y,
+                                layout.control_w, layout.control_h),
+          BROWSER_CAPTION_MINIMIZE, false);
+      browser_draw_caption_button(
+          ctx, layout.max_x, layout.control_y, layout.control_w, layout.control_h,
+          browser_point_in_rect(mouse_x, mouse_y, layout.max_x, layout.control_y,
+                                layout.control_w, layout.control_h),
+          BROWSER_CAPTION_MAXIMIZE, stygian_window_is_maximized(window));
+      browser_draw_caption_button(
+          ctx, layout.close_x, layout.control_y, layout.control_w,
+          layout.control_h,
+          browser_point_in_rect(mouse_x, mouse_y, layout.close_x, layout.control_y,
+                                layout.control_w, layout.control_h),
+          BROWSER_CAPTION_CLOSE, false);
       stygian_scope_end(ctx);
 
       if (show_perf) {

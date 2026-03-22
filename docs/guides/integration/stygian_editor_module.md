@@ -15,13 +15,13 @@ Embed a visual editor into an IDE while preserving exact Stygian C23 output.
 
 Public header:
 
-- `D:\Projects\Code\Stygian\include\stygian_editor.h`
-- `D:\Projects\Code\Stygian\include\stygian_editor_module.h`
+- `D:\Projects\Code\Stygian\editor\include\stygian_editor.h`
+- `D:\Projects\Code\Stygian\editor\include\stygian_editor_module.h`
 
 Implementation:
 
-- `D:\Projects\Code\Stygian\editor\stygian_editor.c`
-- `D:\Projects\Code\Stygian\editor\stygian_editor_module.c`
+- `D:\Projects\Code\Stygian\editor\src\stygian_editor.c`
+- `D:\Projects\Code\Stygian\editor\src\stygian_editor_module.c`
 
 ## Module ABI (Attachable Host Contract)
 
@@ -58,6 +58,9 @@ if (!editor) {
     return false;
 }
 ```
+
+Add `D:\Projects\Code\Stygian\editor\include` to the host include path when
+embedding the module.
 
 ## First-Slice Capabilities
 

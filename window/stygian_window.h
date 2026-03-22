@@ -5,6 +5,7 @@
 
 #include "stygian_input.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -240,6 +241,66 @@ void stygian_window_show_cursor(StygianWindow *win);
 
 float stygian_window_get_dpi_scale(StygianWindow *win);
 void stygian_window_get_framebuffer_size(StygianWindow *win, int *w, int *h);
+
+// ============================================================================
+// Native Dialogs
+// ============================================================================
+
+typedef enum StygianNativeDialogResult {
+  STYGIAN_NATIVE_DIALOG_RESULT_ERROR = -1,
+  STYGIAN_NATIVE_DIALOG_RESULT_CANCEL = 0,
+  STYGIAN_NATIVE_DIALOG_RESULT_OK = 1,
+  STYGIAN_NATIVE_DIALOG_RESULT_YES = 2,
+  STYGIAN_NATIVE_DIALOG_RESULT_NO = 3,
+} StygianNativeDialogResult;
+
+typedef enum StygianNativeFileDialogKind {
+  STYGIAN_NATIVE_FILE_DIALOG_OPEN = 0,
+  STYGIAN_NATIVE_FILE_DIALOG_SAVE = 1,
+  STYGIAN_NATIVE_FILE_DIALOG_PICK_FOLDER = 2,
+} StygianNativeFileDialogKind;
+
+typedef struct StygianNativeFileDialogFilter {
+  const char *label;    // e.g. "Images"
+  const char *patterns; // e.g. "*.png;*.jpg;*.jpeg"
+} StygianNativeFileDialogFilter;
+
+typedef struct StygianNativeFileDialogOptions {
+  const char *title;
+  const char *default_path;
+  const char *default_name;
+  const StygianNativeFileDialogFilter *filters;
+  uint32_t filter_count;
+  bool confirm_overwrite;
+} StygianNativeFileDialogOptions;
+
+typedef enum StygianNativeMessageDialogKind {
+  STYGIAN_NATIVE_MESSAGE_INFO = 0,
+  STYGIAN_NATIVE_MESSAGE_WARNING = 1,
+  STYGIAN_NATIVE_MESSAGE_ERROR = 2,
+  STYGIAN_NATIVE_MESSAGE_QUESTION = 3,
+} StygianNativeMessageDialogKind;
+
+typedef enum StygianNativeMessageDialogButtons {
+  STYGIAN_NATIVE_MESSAGE_OK = 0,
+  STYGIAN_NATIVE_MESSAGE_OK_CANCEL = 1,
+  STYGIAN_NATIVE_MESSAGE_YES_NO = 2,
+  STYGIAN_NATIVE_MESSAGE_YES_NO_CANCEL = 3,
+} StygianNativeMessageDialogButtons;
+
+typedef struct StygianNativeMessageDialogOptions {
+  const char *title;
+  const char *message;
+  StygianNativeMessageDialogKind kind;
+  StygianNativeMessageDialogButtons buttons;
+} StygianNativeMessageDialogOptions;
+
+StygianNativeDialogResult stygian_window_native_file_dialog(
+    StygianWindow *win, StygianNativeFileDialogKind kind,
+    const StygianNativeFileDialogOptions *options, char *out_path,
+    size_t out_path_cap);
+StygianNativeDialogResult stygian_window_native_message_dialog(
+    StygianWindow *win, const StygianNativeMessageDialogOptions *options);
 
 // Clipboard API
 void stygian_clipboard_write(StygianWindow *win, const char *text);

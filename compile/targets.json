@@ -2,6 +2,7 @@
   "common": {
     "includes": [
       "include",
+      "editor/include",
       "window",
       "backends",
       "widgets",
@@ -9,14 +10,17 @@
     ],
     "sources": [
       "examples/mini_perf_harness.c",
-      "editor/stygian_editor.c",
-      "editor/stygian_editor_module.c",
+      "editor/src/stygian_editor.c",
+      "editor/src/stygian_editor_icons.c",
+      "editor/src/stygian_editor_module.c",
       "widgets/stygian_widgets.c",
+      "widgets/ide/file_explorer.c",
       "src/stygian.c",
       "src/stygian_memory.c",
       "src/stygian_triad.c",
       "src/stygian_unicode.c",
       "src/stygian_color.c",
+      "src/stygian_fs.c",
       "src/stygian_icc.c",
       "src/stygian_mtsdf.c",
       "src/stygian_clipboard.c",
@@ -77,6 +81,36 @@
       "entry_source": "examples/browser_mockup.c",
       "output_stem": "browser_mockup_vk"
     },
+    "template": {
+      "backend": "gl",
+      "entry_source": "showcase/apps/template/src/template.c",
+      "output_stem": "template"
+    },
+    "template_vk": {
+      "backend": "vk",
+      "entry_source": "showcase/apps/template/src/template.c",
+      "output_stem": "template_vk"
+    },
+    "stygianweb": {
+      "backend": "gl",
+      "entry_source": "showcase/apps/stygianweb/src/stygianweb.c",
+      "output_stem": "stygianweb"
+    },
+    "stygianweb_vk": {
+      "backend": "vk",
+      "entry_source": "showcase/apps/stygianweb/src/stygianweb.c",
+      "output_stem": "stygianweb_vk"
+    },
+    "fadeterm": {
+      "backend": "gl",
+      "entry_source": "showcase/apps/fadeterm/src/fadeterm.c",
+      "output_stem": "fadeterm"
+    },
+    "fadeterm_vk": {
+      "backend": "vk",
+      "entry_source": "showcase/apps/fadeterm/src/fadeterm.c",
+      "output_stem": "fadeterm_vk"
+    },
     "quickwindow": {
       "backend": "gl",
       "entry_source": "examples/quickwindow.c",
@@ -112,15 +146,320 @@
       "entry_source": "examples/quickwindow_capture_smoke.c",
       "output_stem": "quickwindow_capture_smoke_vk"
     },
+    "native_dialog_api_smoke": {
+      "backend": "gl",
+      "entry_source": "examples/native_dialog_api_smoke.c",
+      "output_stem": "native_dialog_api_smoke"
+    },
+    "fs_overlay_spine_smoke": {
+      "backend": "gl",
+      "entry_source": "examples/fs_overlay_spine_smoke.c",
+      "output_stem": "fs_overlay_spine_smoke"
+    },
     "stygian_editor_bootstrap": {
       "backend": "gl",
-      "entry_source": "examples/stygian_editor_bootstrap.c",
+      "entry_source": "editor/apps/stygian_editor_bootstrap.c",
       "output_stem": "stygian_editor_bootstrap"
+    },
+    "stygian_editor_shell_canvas": {
+      "backend": "gl",
+      "entry_source": "editor/apps/stygian_editor_shell_canvas.c",
+      "output_stem": "stygian_editor_shell_canvas"
+    },
+    "stygian_editor_icon_lab": {
+      "backend": "gl",
+      "entry_source": "editor/apps/stygian_editor_icon_lab.c",
+      "output_stem": "stygian_editor_icon_lab"
     },
     "stygian_editor_bootstrap_vk": {
       "backend": "vk",
-      "entry_source": "examples/stygian_editor_bootstrap.c",
+      "entry_source": "editor/apps/stygian_editor_bootstrap.c",
       "output_stem": "stygian_editor_bootstrap_vk"
+    },
+    "stygian_editor_project_roundtrip_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/project_roundtrip_smoke.c",
+      "output_stem": "stygian_editor_project_roundtrip_smoke"
+    },
+    "stygian_editor_export_determinism_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/export_determinism_smoke.c",
+      "output_stem": "stygian_editor_export_determinism_smoke"
+    },
+    "stygian_editor_export_diff_quality_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/export_diff_quality_smoke.c",
+      "output_stem": "stygian_editor_export_diff_quality_smoke"
+    },
+    "stygian_editor_generated_file_layout_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/generated_file_layout_smoke.c",
+      "output_stem": "stygian_editor_generated_file_layout_smoke"
+    },
+    "stygian_editor_export_diagnostics_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/export_diagnostics_smoke.c",
+      "output_stem": "stygian_editor_export_diagnostics_smoke"
+    },
+    "stygian_editor_project_roundtrip_harness": {
+      "backend": "gl",
+      "entry_source": "editor/tests/project_roundtrip_harness.c",
+      "output_stem": "stygian_editor_project_roundtrip_harness"
+    },
+    "stygian_editor_node_kinds_roundtrip_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/node_kinds_roundtrip_smoke.c",
+      "output_stem": "stygian_editor_node_kinds_roundtrip_smoke"
+    },
+    "stygian_editor_hierarchy_reparent_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/hierarchy_reparent_smoke.c",
+      "output_stem": "stygian_editor_hierarchy_reparent_smoke"
+    },
+    "stygian_editor_constraints_runtime_equivalent_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/constraints_runtime_equivalent_smoke.c",
+      "output_stem": "stygian_editor_constraints_runtime_equivalent_smoke"
+    },
+    "stygian_editor_constraints_resize_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/constraints_resize_smoke.c",
+      "output_stem": "stygian_editor_constraints_resize_smoke"
+    },
+    "stygian_editor_auto_layout_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/auto_layout_smoke.c",
+      "output_stem": "stygian_editor_auto_layout_smoke"
+    },
+    "stygian_editor_auto_layout_runtime_equivalent_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/auto_layout_runtime_equivalent_smoke.c",
+      "output_stem": "stygian_editor_auto_layout_runtime_equivalent_smoke"
+    },
+    "stygian_editor_layout_export_diff_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/layout_export_diff_smoke.c",
+      "output_stem": "stygian_editor_layout_export_diff_smoke"
+    },
+    "stygian_editor_overflow_sizing_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/overflow_sizing_smoke.c",
+      "output_stem": "stygian_editor_overflow_sizing_smoke"
+    },
+    "stygian_editor_guides_snap_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/guides_snap_smoke.c",
+      "output_stem": "stygian_editor_guides_snap_smoke"
+    },
+    "stygian_editor_primitive_coverage_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/primitive_coverage_smoke.c",
+      "output_stem": "stygian_editor_primitive_coverage_smoke"
+    },
+    "stygian_editor_fill_stack_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/fill_stack_smoke.c",
+      "output_stem": "stygian_editor_fill_stack_smoke"
+    },
+    "stygian_editor_paint_geometry_batch_b_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/paint_geometry_batch_b_smoke.c",
+      "output_stem": "stygian_editor_paint_geometry_batch_b_smoke"
+    },
+    "stygian_editor_text_image_batch_c_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/text_image_batch_c_smoke.c",
+      "output_stem": "stygian_editor_text_image_batch_c_smoke"
+    },
+    "stygian_editor_mock_interaction_export_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/mock_interaction_export_smoke.c",
+      "output_stem": "stygian_editor_mock_interaction_export_smoke"
+    },
+    "stygian_editor_component_linkage_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/component_linkage_smoke.c",
+      "output_stem": "stygian_editor_component_linkage_smoke"
+    },
+    "stygian_editor_component_property_export_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/component_property_export_smoke.c",
+      "output_stem": "stygian_editor_component_property_export_smoke"
+    },
+    "stygian_editor_shader_effect_batch_e_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/shader_effect_batch_e_smoke.c",
+      "output_stem": "stygian_editor_shader_effect_batch_e_smoke"
+    },
+    "stygian_editor_next_systems_fixture_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/next_systems_fixture_smoke.c",
+      "output_stem": "stygian_editor_next_systems_fixture_smoke"
+    },
+    "stygian_editor_phase6_components_styles_variables_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/phase6_components_styles_variables_smoke.c",
+      "output_stem": "stygian_editor_phase6_components_styles_variables_smoke"
+    },
+    "stygian_editor_phase7_behavior_bridge_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/phase7_behavior_bridge_smoke.c",
+      "output_stem": "stygian_editor_phase7_behavior_bridge_smoke"
+    },
+    "stygian_editor_phase75_variant_hardening_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/phase75_variant_hardening_smoke.c",
+      "output_stem": "stygian_editor_phase75_variant_hardening_smoke"
+    },
+    "stygian_editor_self_host_layout_shell_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/self_host_layout_shell_smoke.c",
+      "output_stem": "stygian_editor_self_host_layout_shell_smoke"
+    },
+    "stygian_editor_self_host_stage_migration_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/self_host_stage_migration_smoke.c",
+      "output_stem": "stygian_editor_self_host_stage_migration_smoke"
+    },
+    "stygian_editor_self_host_escape_hatch_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/self_host_escape_hatch_smoke.c",
+      "output_stem": "stygian_editor_self_host_escape_hatch_smoke"
+    },
+    "stygian_editor_self_host_daily_flow_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/self_host_daily_flow_smoke.c",
+      "output_stem": "stygian_editor_self_host_daily_flow_smoke"
+    },
+    "stygian_editor_core_unit_suite": {
+      "backend": "gl",
+      "entry_source": "editor/tests/editor_core_unit_suite.c",
+      "output_stem": "stygian_editor_core_unit_suite"
+    },
+    "stygian_editor_export_c23_golden_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/export_c23_golden_smoke.c",
+      "output_stem": "stygian_editor_export_c23_golden_smoke"
+    },
+    "stygian_editor_generated_scene_runtime_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/generated_scene_runtime_smoke.c",
+      "output_stem": "stygian_editor_generated_scene_runtime_smoke"
+    },
+    "stygian_editor_project_hostile_load_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/project_hostile_load_smoke.c",
+      "output_stem": "stygian_editor_project_hostile_load_smoke"
+    },
+    "stygian_editor_module_abi_compat_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/module_abi_compat_smoke.c",
+      "output_stem": "stygian_editor_module_abi_compat_smoke"
+    },
+    "stygian_editor_performance_budget_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/performance_budget_smoke.c",
+      "output_stem": "stygian_editor_performance_budget_smoke"
+    },
+    "stygian_editor_gradient_effect_parity_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/gradient_effect_parity_smoke.c",
+      "output_stem": "stygian_editor_gradient_effect_parity_smoke"
+    },
+    "stygian_editor_mask_runtime_parity_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/mask_runtime_parity_smoke.c",
+      "output_stem": "stygian_editor_mask_runtime_parity_smoke"
+    },
+    "stygian_editor_boolean_solver_parity_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/boolean_solver_parity_smoke.c",
+      "output_stem": "stygian_editor_boolean_solver_parity_smoke"
+    },
+    "stygian_editor_text_shaping_overflow_parity_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/text_shaping_overflow_parity_smoke.c",
+      "output_stem": "stygian_editor_text_shaping_overflow_parity_smoke"
+    },
+    "stygian_editor_variable_binding_parity_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/variable_binding_parity_smoke.c",
+      "output_stem": "stygian_editor_variable_binding_parity_smoke"
+    },
+    "stygian_editor_component_detach_repair_parity_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/component_detach_repair_parity_smoke.c",
+      "output_stem": "stygian_editor_component_detach_repair_parity_smoke"
+    },
+    "stygian_editor_advanced_control_recipes_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/advanced_control_recipes_smoke.c",
+      "output_stem": "stygian_editor_advanced_control_recipes_smoke"
+    },
+    "stygian_editor_host_interop_contract_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/host_interop_contract_smoke.c",
+      "output_stem": "stygian_editor_host_interop_contract_smoke"
+    },
+    "stygian_editor_tabs_behavior_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/tabs_behavior_smoke.c",
+      "output_stem": "stygian_editor_tabs_behavior_smoke"
+    },
+    "stygian_editor_animation_transition_timeline_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/animation_transition_timeline_smoke.c",
+      "output_stem": "stygian_editor_animation_transition_timeline_smoke"
+    },
+    "stygian_editor_timeline_multitrack_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/timeline_multitrack_smoke.c",
+      "output_stem": "stygian_editor_timeline_multitrack_smoke"
+    },
+    "stygian_editor_frame_clip_export_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/frame_clip_export_smoke.c",
+      "output_stem": "stygian_editor_frame_clip_export_smoke"
+    },
+    "stygian_editor_layers_tree_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/layers_tree_smoke.c",
+      "output_stem": "stygian_editor_layers_tree_smoke"
+    },
+    "stygian_editor_property_system_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/property_system_smoke.c",
+      "output_stem": "stygian_editor_property_system_smoke"
+    },
+    "stygian_editor_undo_redo_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/undo_redo_smoke.c",
+      "output_stem": "stygian_editor_undo_redo_smoke"
+    },
+    "stygian_editor_transform_commands_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/transform_commands_smoke.c",
+      "output_stem": "stygian_editor_transform_commands_smoke"
+    },
+    "stygian_editor_rotation_export_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/rotation_export_smoke.c",
+      "output_stem": "stygian_editor_rotation_export_smoke"
+    },
+    "stygian_editor_content_primitives_mvp_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/content_primitives_mvp_smoke.c",
+      "output_stem": "stygian_editor_content_primitives_mvp_smoke"
+    },
+    "stygian_editor_workspace_structure_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/workspace_structure_smoke.c",
+      "output_stem": "stygian_editor_workspace_structure_smoke"
+    },
+    "stygian_editor_frontend_mvp_export_trust_smoke": {
+      "backend": "gl",
+      "entry_source": "editor/tests/frontend_mvp_export_trust_smoke.c",
+      "output_stem": "stygian_editor_frontend_mvp_export_trust_smoke"
     },
     "tier1_safety": {
       "backend": "gl",
@@ -164,6 +503,72 @@
       "quickwindow_borderless",
       "quickwindow_custom_titlebar"
     ],
+    "editor_quick_checkpoint": [
+      "stygian_editor_core_unit_suite",
+      "stygian_editor_project_roundtrip_smoke",
+      "stygian_editor_export_determinism_smoke",
+      "stygian_editor_export_diff_quality_smoke",
+      "stygian_editor_phase7_behavior_bridge_smoke",
+      "stygian_editor_self_host_daily_flow_smoke"
+    ],
+    "editor_next_systems_checkpoint": [
+      "stygian_editor_project_roundtrip_smoke",
+      "stygian_editor_layout_export_diff_smoke",
+      "stygian_editor_variable_binding_parity_smoke",
+      "stygian_editor_component_property_export_smoke",
+      "stygian_editor_shader_effect_batch_e_smoke",
+      "stygian_editor_next_systems_fixture_smoke"
+    ],
+    "editor_hardening_core": [
+      "stygian_editor_core_unit_suite",
+      "stygian_editor_project_roundtrip_smoke",
+      "stygian_editor_export_determinism_smoke",
+      "stygian_editor_export_diff_quality_smoke",
+      "stygian_editor_export_c23_golden_smoke",
+      "stygian_editor_generated_scene_runtime_smoke",
+      "stygian_editor_project_hostile_load_smoke",
+      "stygian_editor_module_abi_compat_smoke",
+      "stygian_editor_performance_budget_smoke",
+      "stygian_editor_gradient_effect_parity_smoke",
+      "stygian_editor_mask_runtime_parity_smoke",
+      "stygian_editor_boolean_solver_parity_smoke",
+      "stygian_editor_text_shaping_overflow_parity_smoke",
+      "stygian_editor_variable_binding_parity_smoke",
+      "stygian_editor_component_detach_repair_parity_smoke",
+      "stygian_editor_advanced_control_recipes_smoke",
+      "stygian_editor_host_interop_contract_smoke",
+      "stygian_editor_tabs_behavior_smoke",
+      "stygian_editor_animation_transition_timeline_smoke"
+    ],
+    "editor_release_gate": [
+      "stygian_editor_core_unit_suite",
+      "stygian_editor_project_roundtrip_smoke",
+      "stygian_editor_project_roundtrip_harness",
+      "stygian_editor_export_determinism_smoke",
+      "stygian_editor_export_diff_quality_smoke",
+      "stygian_editor_export_c23_golden_smoke",
+      "stygian_editor_generated_scene_runtime_smoke",
+      "stygian_editor_project_hostile_load_smoke",
+      "stygian_editor_module_abi_compat_smoke",
+      "stygian_editor_performance_budget_smoke",
+      "stygian_editor_gradient_effect_parity_smoke",
+      "stygian_editor_mask_runtime_parity_smoke",
+      "stygian_editor_boolean_solver_parity_smoke",
+      "stygian_editor_text_shaping_overflow_parity_smoke",
+      "stygian_editor_variable_binding_parity_smoke",
+      "stygian_editor_component_detach_repair_parity_smoke",
+      "stygian_editor_advanced_control_recipes_smoke",
+      "stygian_editor_host_interop_contract_smoke",
+      "stygian_editor_tabs_behavior_smoke",
+      "stygian_editor_animation_transition_timeline_smoke",
+      "stygian_editor_phase75_variant_hardening_smoke",
+      "stygian_editor_phase6_components_styles_variables_smoke",
+      "stygian_editor_phase7_behavior_bridge_smoke",
+      "stygian_editor_self_host_layout_shell_smoke",
+      "stygian_editor_self_host_stage_migration_smoke",
+      "stygian_editor_self_host_escape_hatch_smoke",
+      "stygian_editor_self_host_daily_flow_smoke"
+    ],
     "mini_apps_all": [
       "text_editor_mini",
       "calculator_mini",
@@ -180,3 +585,9 @@
     ]
   }
 }
+
+
+
+
+
+

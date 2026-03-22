@@ -240,6 +240,23 @@ float stygian_window_get_dpi_scale(StygianWindow *win) {
 void stygian_window_get_framebuffer_size(StygianWindow *win, int *w, int *h) {
   stygian_window_get_size(win, w, h);
 }
+StygianNativeDialogResult stygian_window_native_file_dialog(
+    StygianWindow *win, StygianNativeFileDialogKind kind,
+    const StygianNativeFileDialogOptions *options, char *out_path,
+    size_t out_path_cap) {
+  (void)win;
+  (void)kind;
+  (void)options;
+  if (out_path && out_path_cap > 0u)
+    out_path[0] = '\0';
+  return STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+}
+StygianNativeDialogResult stygian_window_native_message_dialog(
+    StygianWindow *win, const StygianNativeMessageDialogOptions *options) {
+  (void)win;
+  (void)options;
+  return STYGIAN_NATIVE_DIALOG_RESULT_ERROR;
+}
 bool stygian_key_down(StygianWindow *win, StygianKey key) {
   (void)win;
   (void)key;

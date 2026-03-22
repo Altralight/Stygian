@@ -34,6 +34,11 @@ struct SoAEffects {
     vec2 _pad;             //  8
 };                         // 96 bytes
 
+struct SoATransform {
+    vec4 row0;
+    vec4 row1;
+};                         // 32 bytes
+
 layout(std430, binding = 4) readonly buffer SoAHotBuffer {
     SoAHot soa_hot[];
 };
@@ -44,6 +49,10 @@ layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer {
 
 layout(std430, binding = 6) readonly buffer SoAEffectsBuffer {
     SoAEffects soa_effects[];
+};
+
+layout(std430, binding = 7) readonly buffer SoATransformBuffer {
+    SoATransform soa_transform[];
 };
 
 // Per-frame uniforms - different for OpenGL vs Vulkan
@@ -77,6 +86,7 @@ layout(location = 8) out vec2 vSize;
 layout(location = 9) flat out uint vInstanceID;
 layout(location = 10) flat out uint vTextureID;
 layout(location = 11) flat out vec4 vReserved0; // _reserved[0] for bezier/wire/metaball
+layout(location = 12) out vec2 vWorldPos;
 
 void main() {
     // Read from SoA (primary path)
@@ -89,9 +99,15 @@ void main() {
 
     vec2 uv01 = aPos * 0.5 + 0.5;
     vec2 size = vec2(h.w, h.h);
+    vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;
+    vec2 elementPos = vec2(h.x, h.y) + localPos;
+    SoATransform t = soa_transform[INSTANCE_ID];
 
     // Pixel space position (Y-down)
-    vec2 pixelPos = vec2(h.x, h.y) + vec2(uv01.x, 1.0 - uv01.y) * size;
+    vec2 pixelPos = vec2(
+        t.row0.x * elementPos.x + t.row0.y * elementPos.y + t.row0.z,
+        t.row1.x * elementPos.x + t.row1.y * elementPos.y + t.row1.z
+    );
     vec2 ndc = (pixelPos / SCREEN_SIZE) * 2.0 - 1.0;
 
     // Flip Y for OpenGL viewport
@@ -118,9 +134,10 @@ void main() {
     vHover = fx.hover;
 
     // Geometry
-    vLocalPos = vec2(uv01.x, 1.0 - uv01.y) * size;
+    vLocalPos = localPos;
     vSize = size;
     vInstanceID = INSTANCE_ID;
+    vWorldPos = pixelPos;
 
     // Pass control points from SoA (bezier/wire/metaball)
     vReserved0 = a.control_points;

@@ -575,7 +575,7 @@ int main(int argc, char **argv) {
     stygian_set_gpu_timing_enabled(ctx, false);
     stygian_set_output_icc_auto(ctx, false);
   }
-  font = stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+  font = stygian_get_default_font(ctx);
   printf("BENCHCFG scenario=%s backend=%s mode=%s count=%u mutate=%u tick_hz=%.2f warmup=%.2f\n",
          scenario_label, STYGIAN_SUITE_RENDERER_NAME,
          raw_mode ? "raw" : "present", scene_count, mutate_count, tick_hz,

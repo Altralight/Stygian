@@ -223,15 +223,15 @@ $commonC = @("-std=c23", "-O2", "-DNDEBUG", "-Ibenchmarks/comparison")
 $commonCpp = @("-std=c++20", "-O2", "-DNDEBUG", "-Ibenchmarks/comparison")
 $stygianIncludes = @(
   "-Iinclude",
+  "-Ieditor/include",
   "-Iwindow",
   "-Ibackends",
   "-Iwidgets",
-  "-Ilayout",
-  "-Ieditor"
+  "-Ilayout"
 )
 $stygianCommonSources = @(
-  "editor/stygian_editor.c",
-  "editor/stygian_editor_module.c",
+  "editor/src/stygian_editor.c",
+  "editor/src/stygian_editor_module.c",
   "widgets/stygian_widgets.c",
   "src/stygian.c",
   "src/stygian_memory.c",

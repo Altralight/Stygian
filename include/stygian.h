@@ -49,6 +49,11 @@ typedef uint32_t StygianTexture; // Opaque texture handle (0 = invalid)
 typedef uint32_t StygianFont;    // Opaque font handle (0 = invalid)
 typedef uint64_t StygianScopeId; // Opaque retained scope id (0 = invalid)
 
+typedef struct StygianTransform2D {
+  float m00, m01, m02;
+  float m10, m11, m12;
+} StygianTransform2D;
+
 // DDI: Overlay scope ID range (separate tick domain from base UI)
 #define STYGIAN_OVERLAY_SCOPE_BASE 0xFFFF000000000000ULL
 #define STYGIAN_OVERLAY_SCOPE_END 0xFFFFFFFFFFFFFFFFULL
@@ -152,6 +157,9 @@ typedef struct StygianConfig {
   uint32_t glyph_feature_flags; // Default: STYGIAN_GLYPH_FEATURE_DEFAULT
   StygianWindow *window;        // Required: window from stygian_window_create()
   const char *shader_dir;       // Optional: Override shader directory
+  const char *default_font_atlas_png;  // Optional: explicit default atlas path
+  const char *default_font_atlas_json; // Optional: explicit default atlas meta
+  bool skip_default_font_atlas_load;   // Optional: apps can own font loading
   StygianAllocator *persistent_allocator; // Optional: defaults to CRT allocator
 } StygianConfig;
 
@@ -290,6 +298,7 @@ uint32_t stygian_get_active_element_count(const StygianContext *ctx);
 uint32_t stygian_get_element_capacity(const StygianContext *ctx);
 uint32_t stygian_get_free_element_count(const StygianContext *ctx);
 uint32_t stygian_get_font_count(const StygianContext *ctx);
+StygianFont stygian_get_default_font(const StygianContext *ctx);
 uint32_t stygian_get_inline_emoji_cache_count(const StygianContext *ctx);
 uint16_t stygian_get_clip_capacity(const StygianContext *ctx);
 uint32_t stygian_get_last_commit_applied(const StygianContext *ctx);
@@ -375,6 +384,22 @@ uint8_t stygian_clip_push(StygianContext *ctx, float x, float y, float w,
                           float h);
 void stygian_clip_pop(StygianContext *ctx);
 
+// 2D transforms
+StygianTransform2D stygian_transform_identity(void);
+void stygian_transform_reset(StygianContext *ctx);
+void stygian_transform_push(StygianContext *ctx);
+void stygian_transform_pop(StygianContext *ctx);
+void stygian_transform_set_current(StygianContext *ctx,
+                                   StygianTransform2D transform);
+StygianTransform2D stygian_transform_get_current(const StygianContext *ctx);
+void stygian_transform_concat(StygianContext *ctx, StygianTransform2D transform);
+void stygian_transform_translate(StygianContext *ctx, float tx, float ty);
+void stygian_transform_scale(StygianContext *ctx, float sx, float sy);
+void stygian_transform_rotate(StygianContext *ctx, float radians);
+void stygian_set_element_transform(StygianContext *ctx, StygianElement e,
+                                   StygianTransform2D transform);
+void stygian_clear_element_transform(StygianContext *ctx, StygianElement e);
+
 // ============================================================================
 // Textures
 // ============================================================================
@@ -383,6 +408,8 @@ StygianTexture stygian_texture_create(StygianContext *ctx, int w, int h,
                                       const void *rgba);
 bool stygian_texture_update(StygianContext *ctx, StygianTexture tex, int x,
                             int y, int w, int h, const void *rgba);
+bool stygian_texture_get_size(const StygianContext *ctx, StygianTexture tex,
+                              int *out_w, int *out_h);
 void stygian_texture_destroy(StygianContext *ctx, StygianTexture tex);
 
 // ============================================================================

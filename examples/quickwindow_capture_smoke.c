@@ -86,7 +86,7 @@ int main(void) {
   }
 
   StygianFont font =
-      stygian_font_load(ctx, "assets/atlas.png", "assets/atlas.json");
+      stygian_get_default_font(ctx);
 
 #if defined(STYGIAN_CAPTURE_ENABLED)
   const char *capture_output_path = getenv("STYGIAN_CAPTURE_OUTPUT");

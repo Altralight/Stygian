@@ -3,6 +3,7 @@
 #include "../include/stygian.h"
 #include "../include/stygian_memory.h"
 #include "../src/stygian_internal.h" // stygian_cpystr
+#include "../src/stygian_platform.h"
 #include "../window/stygian_window.h"
 #include "stygian_ap.h"
 
@@ -48,6 +49,7 @@ struct StygianAP {
   VkRenderPass render_pass;
   VkPipelineLayout pipeline_layout;
   VkPipeline graphics_pipeline;
+  VkPipelineCache pipeline_cache;
 
   // Resources
   VkBuffer clip_ssbo;
@@ -125,7 +127,7 @@ struct StygianAP {
   bool output_dst_srgb_transfer;
   float output_dst_gamma;
 
-  // SoA SSBOs (bindings 4/5/6 — mirrors GL backend)
+  // SoA SSBOs (bindings 4/5/6/7 — mirrors GL backend)
   VkBuffer soa_hot_buf;
   VkDeviceMemory soa_hot_mem;
   void *soa_hot_mapped;
@@ -135,11 +137,15 @@ struct StygianAP {
   VkBuffer soa_effects_buf;
   VkDeviceMemory soa_effects_mem;
   void *soa_effects_mapped;
+  VkBuffer soa_transform_buf;
+  VkDeviceMemory soa_transform_mem;
+  void *soa_transform_mapped;
 
   // Per-chunk GPU version tracking (for dirty range upload)
   uint32_t *gpu_hot_versions;
   uint32_t *gpu_appearance_versions;
   uint32_t *gpu_effects_versions;
+  uint32_t *gpu_transform_versions;
   uint32_t soa_chunk_count;
 
   // Main surface (embedded for the primary window)
@@ -1502,6 +1508,88 @@ static bool create_framebuffers(StygianAP *ap) {
   return true;
 }
 
+static bool stygian_vk_pipeline_cache_path(char *out_path, size_t out_cap) {
+  char bin_dir[512];
+  const char *sep = "\\";
+  if (!out_path || out_cap == 0)
+    return false;
+  if (!stygian_get_binary_dir(bin_dir, sizeof(bin_dir)))
+    return false;
+#ifndef _WIN32
+  sep = "/";
+#endif
+  return snprintf(out_path, out_cap, "%s%sstygian_vk_pipeline_cache.bin",
+                  bin_dir, sep) > 0;
+}
+
+static void stygian_vk_create_pipeline_cache(StygianAP *ap) {
+  char path[640];
+  void *initial_data = NULL;
+  size_t initial_size = 0u;
+  VkPipelineCacheCreateInfo cache_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+  };
+
+  if (!ap || !ap->device)
+    return;
+  if (stygian_vk_pipeline_cache_path(path, sizeof(path))) {
+    FILE *f = fopen(path, "rb");
+    if (f) {
+      if (fseek(f, 0, SEEK_END) == 0) {
+        long size = ftell(f);
+        if (size > 0 && fseek(f, 0, SEEK_SET) == 0) {
+          initial_data = malloc((size_t)size);
+          if (initial_data &&
+              fread(initial_data, 1u, (size_t)size, f) == (size_t)size) {
+            initial_size = (size_t)size;
+          } else {
+            free(initial_data);
+            initial_data = NULL;
+          }
+        }
+      }
+      fclose(f);
+    }
+  }
+
+  cache_info.initialDataSize = initial_size;
+  cache_info.pInitialData = initial_data;
+  if (vkCreatePipelineCache(ap->device, &cache_info, NULL, &ap->pipeline_cache) !=
+      VK_SUCCESS) {
+    ap->pipeline_cache = VK_NULL_HANDLE;
+  }
+  free(initial_data);
+}
+
+static void stygian_vk_store_pipeline_cache(StygianAP *ap) {
+  char path[640];
+  size_t size = 0u;
+  void *data = NULL;
+  FILE *f = NULL;
+
+  if (!ap || !ap->device || !ap->pipeline_cache)
+    return;
+  if (!stygian_vk_pipeline_cache_path(path, sizeof(path)))
+    return;
+  if (vkGetPipelineCacheData(ap->device, ap->pipeline_cache, &size, NULL) !=
+          VK_SUCCESS ||
+      size == 0u) {
+    return;
+  }
+  data = malloc(size);
+  if (!data)
+    return;
+  if (vkGetPipelineCacheData(ap->device, ap->pipeline_cache, &size, data) ==
+      VK_SUCCESS) {
+    f = fopen(path, "wb");
+    if (f) {
+      fwrite(data, 1u, size, f);
+      fclose(f);
+    }
+  }
+  free(data);
+}
+
 static void cleanup_raw_target(StygianAP *ap) {
   if (!ap || !ap->device)
     return;
@@ -1811,16 +1899,18 @@ static bool create_buffers(StygianAP *ap) {
     VkDeviceMemory *mem;
     VkDeviceSize size;
     const char *name;
-  } soa_bufs[3] = {
+  } soa_bufs[4] = {
       {&ap->soa_hot_buf, &ap->soa_hot_mem,
        ap->max_elements * sizeof(StygianSoAHot), "hot"},
       {&ap->soa_appearance_buf, &ap->soa_appearance_mem,
        ap->max_elements * sizeof(StygianSoAAppearance), "appearance"},
       {&ap->soa_effects_buf, &ap->soa_effects_mem,
        ap->max_elements * sizeof(StygianSoAEffects), "effects"},
+      {&ap->soa_transform_buf, &ap->soa_transform_mem,
+       ap->max_elements * sizeof(StygianSoATransform), "transform"},
   };
 
-  for (int si = 0; si < 3; si++) {
+  for (int si = 0; si < 4; si++) {
     buffer_info.size = soa_bufs[si].size;
     buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
@@ -1849,10 +1939,11 @@ static bool create_buffers(StygianAP *ap) {
     vkBindBufferMemory(ap->device, *soa_bufs[si].buf, *soa_bufs[si].mem, 0);
 
     {
-      void **mapped_slots[3] = {
+      void **mapped_slots[4] = {
           &ap->soa_hot_mapped,
           &ap->soa_appearance_mapped,
           &ap->soa_effects_mapped,
+          &ap->soa_transform_mapped,
       };
       if (vkMapMemory(ap->device, *soa_bufs[si].mem, 0, VK_WHOLE_SIZE, 0,
                       mapped_slots[si]) != VK_SUCCESS) {
@@ -1864,9 +1955,9 @@ static bool create_buffers(StygianAP *ap) {
   }
 
   printf("[Stygian AP VK] SoA SSBOs created (hot: %zu, appearance: %zu, "
-         "effects: %zu bytes)\n",
+         "effects: %zu, transform: %zu bytes)\n",
          (size_t)soa_bufs[0].size, (size_t)soa_bufs[1].size,
-         (size_t)soa_bufs[2].size);
+         (size_t)soa_bufs[2].size, (size_t)soa_bufs[3].size);
 
   // Create vertex buffer (quad: 6 vertices)
   float quad_vertices[] = {
@@ -1908,18 +1999,19 @@ static bool create_buffers(StygianAP *ap) {
   memcpy(data, quad_vertices, vb_size);
   vkUnmapMemory(ap->device, ap->vertex_memory);
 
-  printf("[Stygian AP VK] Buffers created (SoA hot/app/fx: %zu/%zu/%zu, "
-         "Clip: %zu, VB: %zu bytes)\n",
+  printf("[Stygian AP VK] Buffers created (SoA hot/app/fx/xform: "
+         "%zu/%zu/%zu/%zu, Clip: %zu, VB: %zu bytes)\n",
          (size_t)soa_bufs[0].size, (size_t)soa_bufs[1].size,
-         (size_t)soa_bufs[2].size, (size_t)clip_size, (size_t)vb_size);
+         (size_t)soa_bufs[2].size, (size_t)soa_bufs[3].size,
+         (size_t)clip_size, (size_t)vb_size);
   return true;
 }
 
 static bool create_descriptor_sets(StygianAP *ap) {
   // Descriptor set layout:
   // 1 = font sampler, 2 = image sampler array, 3 = clip SSBO,
-  // 4 = SoA hot, 5 = SoA appearance, 6 = SoA effects
-  VkDescriptorSetLayoutBinding bindings[6] = {
+  // 4 = SoA hot, 5 = SoA appearance, 6 = SoA effects, 7 = SoA transform
+  VkDescriptorSetLayoutBinding bindings[7] = {
       {
           .binding = 1,
           .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1959,11 +2051,18 @@ static bool create_descriptor_sets(StygianAP *ap) {
           .stageFlags =
               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
       },
+      {
+          .binding = 7,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1,
+          .stageFlags =
+              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+      },
   };
 
   VkDescriptorSetLayoutCreateInfo layout_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-      .bindingCount = 6,
+      .bindingCount = 7,
       .pBindings = bindings,
   };
 
@@ -1973,9 +2072,9 @@ static bool create_descriptor_sets(StygianAP *ap) {
     return false;
   }
 
-  // Descriptor pool (4 storage buffers: clip + hot + appearance + effects)
+  // Descriptor pool (5 storage buffers: clip + hot + appearance + effects + transform)
   VkDescriptorPoolSize pool_sizes[2] = {
-      {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4},
+      {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 5},
       {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
        .descriptorCount = 1 + STYGIAN_VK_IMAGE_SAMPLERS},
   };
@@ -2007,7 +2106,7 @@ static bool create_descriptor_sets(StygianAP *ap) {
     return false;
   }
 
-  // Update descriptor set: clip + SoA hot/appearance/effects
+  // Update descriptor set: clip + SoA hot/appearance/effects/transform
   VkDescriptorBufferInfo clip_buffer_info = {
       .buffer = ap->clip_ssbo,
       .offset = 0,
@@ -2028,8 +2127,13 @@ static bool create_descriptor_sets(StygianAP *ap) {
       .offset = 0,
       .range = VK_WHOLE_SIZE,
   };
+  VkDescriptorBufferInfo soa_transform_info = {
+      .buffer = ap->soa_transform_buf,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE,
+  };
 
-  VkWriteDescriptorSet descriptor_writes[4] = {
+  VkWriteDescriptorSet descriptor_writes[5] = {
       {
           .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
           .dstSet = ap->descriptor_set,
@@ -2066,11 +2170,20 @@ static bool create_descriptor_sets(StygianAP *ap) {
           .descriptorCount = 1,
           .pBufferInfo = &soa_effects_info,
       },
+      {
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = ap->descriptor_set,
+          .dstBinding = 7,
+          .dstArrayElement = 0,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1,
+          .pBufferInfo = &soa_transform_info,
+      },
   };
 
-  vkUpdateDescriptorSets(ap->device, 4, descriptor_writes, 0, NULL);
+  vkUpdateDescriptorSets(ap->device, 5, descriptor_writes, 0, NULL);
 
-  printf("[Stygian AP VK] Descriptor sets created (6 bindings, SoA-only)\n");
+  printf("[Stygian AP VK] Descriptor sets created (7 bindings, SoA-only)\n");
   return true;
 }
 
@@ -2238,7 +2351,7 @@ static bool load_shaders_and_create_pipeline(StygianAP *ap) {
       .subpass = 0,
   };
 
-  if (vkCreateGraphicsPipelines(ap->device, VK_NULL_HANDLE, 1, &pipeline_info,
+  if (vkCreateGraphicsPipelines(ap->device, ap->pipeline_cache, 1, &pipeline_info,
                                 NULL, &ap->graphics_pipeline) != VK_SUCCESS) {
     printf("[Stygian AP VK] Failed to create graphics pipeline\n");
     return false;
@@ -2276,8 +2389,10 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   ap->output_dst_srgb_transfer = true;
   ap->output_src_gamma = 2.4f;
   ap->output_dst_gamma = 2.4f;
-  ap->resize_debounce_frames = 2;
-  ap->resize_suboptimal_threshold = 3;
+  // The default path should feel live while resizing. If somebody wants the
+  // old debounce they can still force it with the env var.
+  ap->resize_debounce_frames = 0;
+  ap->resize_suboptimal_threshold = 1;
   ap->resize_telemetry_enabled = false;
   ap->resize_telemetry_period = 120;
   memset(ap->output_color_matrix, 0, sizeof(ap->output_color_matrix));
@@ -2499,13 +2614,23 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
       vkUnmapMemory(ap->device, ap->soa_effects_mem);
     if (ap->soa_effects_mem)
       vkFreeMemory(ap->device, ap->soa_effects_mem, NULL);
+    if (ap->soa_transform_buf)
+      vkDestroyBuffer(ap->device, ap->soa_transform_buf, NULL);
+    if (ap->soa_transform_mapped)
+      vkUnmapMemory(ap->device, ap->soa_transform_mem);
+    if (ap->soa_transform_mem)
+      vkFreeMemory(ap->device, ap->soa_transform_mem, NULL);
     // ... (cleanup sync, command pool, framebuffers, etc.)
     cfg_free(ap->allocator, ap);
     return NULL;
   }
 
+  stygian_vk_create_pipeline_cache(ap);
+
   // Load shaders and create pipeline
   if (!load_shaders_and_create_pipeline(ap)) {
+    if (ap->pipeline_cache)
+      vkDestroyPipelineCache(ap->device, ap->pipeline_cache, NULL);
     vkDestroyDescriptorPool(ap->device, ap->descriptor_pool, NULL);
     vkDestroyDescriptorSetLayout(ap->device, ap->descriptor_layout, NULL);
     vkDestroyBuffer(ap->device, ap->vertex_buffer, NULL);
@@ -2527,12 +2652,16 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
         (uint32_t *)ap_alloc(ap, cc * sizeof(uint32_t), _Alignof(uint32_t));
     ap->gpu_effects_versions =
         (uint32_t *)ap_alloc(ap, cc * sizeof(uint32_t), _Alignof(uint32_t));
+    ap->gpu_transform_versions =
+        (uint32_t *)ap_alloc(ap, cc * sizeof(uint32_t), _Alignof(uint32_t));
     if (ap->gpu_hot_versions)
       memset(ap->gpu_hot_versions, 0, cc * sizeof(uint32_t));
     if (ap->gpu_appearance_versions)
       memset(ap->gpu_appearance_versions, 0, cc * sizeof(uint32_t));
     if (ap->gpu_effects_versions)
       memset(ap->gpu_effects_versions, 0, cc * sizeof(uint32_t));
+    if (ap->gpu_transform_versions)
+      memset(ap->gpu_transform_versions, 0, cc * sizeof(uint32_t));
   }
 
   printf("[Stygian AP VK] Vulkan backend initialized successfully\n");
@@ -2544,10 +2673,16 @@ void stygian_ap_destroy(StygianAP *ap) {
   if (!ap)
     return;
 
-  // Wait for device to finish all operations
+  // Full device-idle is safe, but it also makes tiny apps feel like they're
+  // dragging a piano out the door on close.
   if (ap->device) {
-    vkDeviceWaitIdle(ap->device);
+    if (ap->graphics_queue)
+      vkQueueWaitIdle(ap->graphics_queue);
+    else
+      vkDeviceWaitIdle(ap->device);
   }
+
+  stygian_vk_store_pipeline_cache(ap);
 
   stygian_vk_capture_release(ap);
 
@@ -2569,6 +2704,8 @@ void stygian_ap_destroy(StygianAP *ap) {
 
   if (ap->graphics_pipeline)
     vkDestroyPipeline(ap->device, ap->graphics_pipeline, NULL);
+  if (ap->pipeline_cache)
+    vkDestroyPipelineCache(ap->device, ap->pipeline_cache, NULL);
   if (ap->pipeline_layout)
     vkDestroyPipelineLayout(ap->device, ap->pipeline_layout, NULL);
   if (ap->vert_module)
@@ -2608,6 +2745,12 @@ void stygian_ap_destroy(StygianAP *ap) {
     vkUnmapMemory(ap->device, ap->soa_effects_mem);
   if (ap->soa_effects_mem)
     vkFreeMemory(ap->device, ap->soa_effects_mem, NULL);
+  if (ap->soa_transform_buf)
+    vkDestroyBuffer(ap->device, ap->soa_transform_buf, NULL);
+  if (ap->soa_transform_mapped)
+    vkUnmapMemory(ap->device, ap->soa_transform_mem);
+  if (ap->soa_transform_mem)
+    vkFreeMemory(ap->device, ap->soa_transform_mem, NULL);
   if (ap->font_sampler)
     vkDestroySampler(ap->device, ap->font_sampler, NULL);
   if (ap->font_view)
@@ -2652,6 +2795,10 @@ void stygian_ap_destroy(StygianAP *ap) {
 
   // Free AP struct via its own allocator
   StygianAllocator *allocator = ap->allocator;
+  ap_free(ap, ap->gpu_hot_versions);
+  ap_free(ap, ap->gpu_appearance_versions);
+  ap_free(ap, ap->gpu_effects_versions);
+  ap_free(ap, ap->gpu_transform_versions);
   cfg_free(allocator, ap);
 }
 
@@ -2775,23 +2922,28 @@ void stygian_ap_begin_frame(StygianAP *ap, int width, int height) {
     }
   }
 
-  // Coalesce resize churn: only recreate after size is stable for N frames.
+  // Main-window resize wants to feel immediate. Keep the old debounce path
+  // available only when explicitly requested.
   if (!ap->swapchain_needs_recreate &&
       ((uint32_t)width != ap->swapchain_extent.width ||
        (uint32_t)height != ap->swapchain_extent.height)) {
-    if (ap->resize_pending_w != width || ap->resize_pending_h != height) {
-      ap->resize_pending_w = width;
-      ap->resize_pending_h = height;
-      ap->resize_stable_count = 0;
-      return;
-    }
+    if (ap->resize_debounce_frames == 0u) {
+      ap->swapchain_needs_recreate = true;
+    } else {
+      if (ap->resize_pending_w != width || ap->resize_pending_h != height) {
+        ap->resize_pending_w = width;
+        ap->resize_pending_h = height;
+        ap->resize_stable_count = 0;
+        return;
+      }
 
-    ap->resize_stable_count++;
-    if (ap->resize_stable_count < ap->resize_debounce_frames) {
-      return;
-    }
+      ap->resize_stable_count++;
+      if (ap->resize_stable_count < ap->resize_debounce_frames) {
+        return;
+      }
 
-    ap->swapchain_needs_recreate = true;
+      ap->swapchain_needs_recreate = true;
+    }
     if (!recreate_main_swapchain(ap, width, height)) {
       return;
     }
@@ -2891,10 +3043,12 @@ void stygian_ap_submit(StygianAP *ap, const StygianSoAHot *soa_hot,
 void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
                            const StygianSoAAppearance *appearance,
                            const StygianSoAEffects *effects,
+                           const StygianSoATransform *transform,
                            uint32_t element_count,
                            const StygianBufferChunk *chunks,
                            uint32_t chunk_count, uint32_t chunk_size) {
-  if (!ap || !hot || !appearance || !effects || !chunks || element_count == 0)
+  if (!ap || !hot || !appearance || !effects || !transform || !chunks ||
+      element_count == 0)
     return;
 
   // Clamp to AP mirror metadata; commit side owns authoritative chunk count.
@@ -2910,6 +3064,7 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
   void *hot_mapped = ap->soa_hot_mapped;
   void *app_mapped = ap->soa_appearance_mapped;
   void *eff_mapped = ap->soa_effects_mapped;
+  void *xform_mapped = ap->soa_transform_mapped;
 
   for (uint32_t ci = 0; ci < chunk_count; ci++) {
     const StygianBufferChunk *c = &chunks[ci];
@@ -2978,6 +3133,28 @@ void stygian_ap_submit_soa(StygianAP *ap, const StygianSoAHot *hot,
         }
       }
       ap->gpu_effects_versions[ci] = c->effects_version;
+    }
+
+    // --- Transform buffer ---
+    if (ap->gpu_transform_versions &&
+        c->transform_version != ap->gpu_transform_versions[ci]) {
+      uint32_t dmin = c->transform_dirty_min;
+      uint32_t dmax = c->transform_dirty_max;
+      if (dmin <= dmax) {
+        uint32_t abs_min = base + dmin;
+        uint32_t abs_max = base + dmax;
+        if (abs_max >= element_count)
+          abs_max = element_count - 1;
+        if (abs_min < element_count && xform_mapped) {
+          uint32_t range_count = abs_max - abs_min + 1;
+          size_t offset = (size_t)abs_min * sizeof(StygianSoATransform);
+          size_t bytes = (size_t)range_count * sizeof(StygianSoATransform);
+          memcpy((char *)xform_mapped + offset, &transform[abs_min], bytes);
+          ap->last_upload_bytes += (uint32_t)bytes;
+          ap->last_upload_ranges++;
+        }
+      }
+      ap->gpu_transform_versions[ci] = c->transform_version;
     }
   }
 

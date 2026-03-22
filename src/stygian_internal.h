@@ -315,6 +315,11 @@ typedef struct StygianSoAEffects {
   float _pad[2];           //  8
 } StygianSoAEffects;       // 96 bytes
 
+typedef struct StygianSoATransform {
+  float row0[4]; // m00, m01, m02, unused
+  float row1[4]; // m10, m11, m12, unused
+} StygianSoATransform; // 32 bytes
+
 // Render mode bits (packed into upper 16 bits of hot.type)
 #define STYGIAN_MODE_APPEARANCE (1u << 16)
 #define STYGIAN_MODE_EFFECTS (1u << 17)
@@ -328,12 +333,15 @@ _Static_assert(sizeof(StygianSoAAppearance) == 64,
                "StygianSoAAppearance must be 64 bytes (4 × vec4)");
 _Static_assert(sizeof(StygianSoAEffects) == 96,
                "StygianSoAEffects must be 96 bytes (6 × vec4)");
+_Static_assert(sizeof(StygianSoATransform) == 32,
+               "StygianSoATransform must be 32 bytes (2 × vec4)");
 
 // SoA container
 typedef struct StygianSoA {
   StygianSoAHot *hot;
   StygianSoAAppearance *appearance;
   StygianSoAEffects *effects;
+  StygianSoATransform *transform;
   uint32_t element_count;
   uint32_t capacity;
 } StygianSoA;
@@ -351,10 +359,12 @@ typedef struct StygianBufferChunk {
   uint32_t hot_version;
   uint32_t appearance_version;
   uint32_t effects_version;
+  uint32_t transform_version;
   // Per-buffer dirty element range within this chunk (relative to chunk start)
   uint32_t hot_dirty_min, hot_dirty_max;
   uint32_t appearance_dirty_min, appearance_dirty_max;
   uint32_t effects_dirty_min, effects_dirty_max;
+  uint32_t transform_dirty_min, transform_dirty_max;
 } StygianBufferChunk;
 
 // ============================================================================
@@ -387,6 +397,8 @@ struct StygianContext {
   uint32_t texture_free_count;
   uint16_t *texture_generations;
   uint32_t *texture_backend_ids;
+  int32_t *texture_widths;
+  int32_t *texture_heights;
   uint32_t texture_count;
 
   // SoA element storage (Hot/Cold split — 3 SSBOs)
@@ -406,6 +418,11 @@ struct StygianContext {
   uint8_t clip_stack[32];
   uint8_t clip_stack_top;
 
+  // Draw-state transform stack. This is renderer state, not layout truth.
+  StygianTransform2D current_transform;
+  StygianTransform2D transform_stack[32];
+  uint8_t transform_stack_top;
+
   // Fonts
   StygianFontAtlas *fonts;
   uint32_t *font_free_list;
@@ -413,6 +430,7 @@ struct StygianContext {
   uint16_t *font_generations;
   uint8_t *font_alive;
   uint32_t font_count;
+  StygianFont default_font;
 
   StygianInlineEmojiCacheEntry
       inline_emoji_cache[STYGIAN_INLINE_EMOJI_CACHE_SIZE];
@@ -569,6 +587,18 @@ static inline void stygian_mark_soa_effects_dirty(StygianContext *ctx,
     c->effects_dirty_min = local;
   if (local > c->effects_dirty_max)
     c->effects_dirty_max = local;
+}
+
+static inline void stygian_mark_soa_transform_dirty(StygianContext *ctx,
+                                                    uint32_t id) {
+  uint32_t ci = id / ctx->chunk_size;
+  uint32_t local = id % ctx->chunk_size;
+  StygianBufferChunk *c = &ctx->chunks[ci];
+  c->transform_version++;
+  if (local < c->transform_dirty_min)
+    c->transform_dirty_min = local;
+  if (local > c->transform_dirty_max)
+    c->transform_dirty_max = local;
 }
 
 #endif // STYGIAN_INTERNAL_H

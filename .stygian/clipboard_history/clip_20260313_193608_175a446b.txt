@@ -1,2 +1,0 @@
-# METADATA: stygian-editor-icon-call
-stygian_editor_draw_icon(ctx, STYGIAN_EDITOR_ICON_INSTANCE, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);

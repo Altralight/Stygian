@@ -1,4 +1,0 @@
-# METADATA: stygian-editor-shortcuts
-Canvas / Icons switch in title bar
-Toolbar families: press chevron
-Right click icon preview: copy icon call

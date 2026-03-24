@@ -32,6 +32,10 @@ capture/
 # Private local notes and application drafts
 notes/
 editor/
+.stygian/
+syntax_*.log
+*.pdb
+_tmp_*
 *_root_stdout.txt
 *_root_stderr.txt
 

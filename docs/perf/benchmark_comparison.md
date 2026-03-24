@@ -25,7 +25,6 @@ If you flatten all of those into one scoreboard, the result is garbage.
   - CPU: `Intel(R) Core(TM) i7-4710HQ CPU @ 2.50GHz`
   - GPU: `Intel(R) HD Graphics 4600`
   - OS: `Microsoft Windows 11 Pro 10.0.26100`
-  - Driver: `20.19.15.4624`
 - Native backend baselines in this document currently cover:
   - OpenGL 4.3 on `Intel(R) HD Graphics 4600`
   - Vulkan 1.x on `NVIDIA GeForce GTX 860M`
@@ -39,7 +38,7 @@ If you flatten all of those into one scoreboard, the result is garbage.
 
 Run each case long enough to discard startup noise, then capture steady-state averages plus p95 if available. All libraries should render equivalent scene structure and text density where practical.
 
-For the local Stygian baselines below, raw mode runs with present disabled, GPU timer queries disabled, and ICC auto-probing disabled. That is intentional. On this HD 4600, GL timer queries were distorting max-throughput measurements badly enough to make the benchmark lie.
+For the local Stygian baselines below, raw mode runs with present disabled and GPU timing disabled. That is intentional. The tiny static-text lane on this laptop is dominated by frame setup and driver cost, so leaving timing and present machinery on makes the benchmark say more about backend overhead than about the scene itself.
 
 ## Hardware Context Matters
 
@@ -62,17 +61,26 @@ There is now a separate Windows comparison lane in [benchmarks/comparison/README
 
 ## Current Stygian Baseline (Local, Raw, No-Present)
 
+The four rows most relevant to the grant pass were rerun on `2026-03-24` after:
+
+- removing a pointless main-context rebind on the OpenGL single-window path
+- pushing the GPU timing toggle all the way into the Vulkan raw path
+- prewarming the command lane so the frame-allocation assertions stay honest
+- a recent Intel driver update on this machine
+
+The remaining rows in the table are older local captures on the same hardware. They are still useful for workload shape, but they were not part of the fresh rerun.
+
 | Backend | Hardware | Case | Count | Dirty | Wall FPS | Render ms | Build ms | Submit ms | Draw Calls | Upload Bytes |
 |---------|----------|------|-------|-------|----------|-----------|----------|-----------|------------|--------------|
-| OpenGL | HD 4600 | Text editor static scene | 122 visible glyph elements | 0 | 662.09 | 1.3157 | 1.2421 | 0.0736 | 1 | 0 |
-| OpenGL | HD 4600 | Static scene (clean replay) | 10,000 | 0 | 597.92 | 1.3545 | 1.2380 | 0.1165 | 1 | 0 |
+| OpenGL | HD 4600 | Text editor static scene | 122 visible glyph elements | 0 | 4845.67 | 0.0890 | 0.0330 | 0.0560 | 1 | 0 |
+| OpenGL | HD 4600 | Static scene (clean replay) | 10,000 | 0 | 709.33 | 1.0989 | 0.8643 | 0.2346 | 1 | 0 |
 | OpenGL | HD 4600 | Sparse dirty scene | 10,000 | 100 | 418.44 | 2.0395 | 1.6789 | 0.3606 | 1 | 30,784 |
 | OpenGL | HD 4600 | Full-hot scene | 10,000 | all | 185.58 | 5.0920 | 3.9017 | 1.1903 | 1 | 2,087,072 |
 | OpenGL | HD 4600 | Static scene (clean replay) | 100,000 | 0 | 60.41 | 14.2607 | 11.1202 | 3.1405 | 1 | 0 |
 | OpenGL | HD 4600 | Sparse dirty scene | 100,000 | 1,000 | 75.64 | 11.3359 | 9.0200 | 2.3159 | 1 | 247,936 |
 | OpenGL | HD 4600 | Full-hot scene | 100,000 | all | 20.33 | 47.9315 | 36.5910 | 11.3405 | 1 | 20,807,072 |
-| Vulkan | GTX 860M | Text editor static scene | 122 visible glyph elements | 0 | 1886.74 | 0.3569 | 0.3465 | 0.0104 | 1 | 0 |
-| Vulkan | GTX 860M | Static scene (clean replay) | 10,000 | 0 | 970.92 | 0.6659 | 0.6546 | 0.0112 | 1 | 0 |
+| Vulkan | GTX 860M | Text editor static scene | 122 visible glyph elements | 0 | 1883.00 | 0.2909 | 0.2744 | 0.0165 | 1 | 0 |
+| Vulkan | GTX 860M | Static scene (clean replay) | 10,000 | 0 | 668.67 | 0.9264 | 0.9041 | 0.0223 | 1 | 0 |
 | OpenGL | HD 4600 | Node graph showcase (pretty) | 64 nodes, labeled | scene redraw | 598.00 | 1.4900 | 1.3550 | 0.1350 | 1 | scene-dependent |
 | OpenGL | HD 4600 | Node graph benchmark mode | 64 nodes, stripped | scene redraw | 509.00 | 1.7863 | 1.6920 | 0.0943 | 1 | scene-dependent |
 
@@ -81,7 +89,8 @@ Notes:
 - `100k @ 500 FPS` is not real for a dense visible scene on this machine.
 - The invalidation/replay and SoA data-model story is still real: static frames do reach zero upload after warmup.
 - Sparse dirty cases scale much better than full-hot cases, which is exactly what the architecture is supposed to buy.
-- The node/text showcase numbers were previously underreported because the benchmark path was paying for low-grade Windows timers, GL timer-query overhead, and unnecessary Vulkan frame-boundary work.
+- The refreshed text/static rows were previously understated by backend bookkeeping cost that did not belong in the raw lane.
+- OpenGL can still beat Vulkan in the tiny `text_static` case on this laptop because that scene is mostly measuring frame/setup overhead, not real GPU pressure.
 - The biggest recent wins came from core allocation/replay cleanup and backend frame semantics, not benchmark-only shortcuts. Those same paths are used by real apps and shipped demos.
 
 ## Current Windows Headless Comparison Lane (10k, Local)

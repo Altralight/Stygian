@@ -798,8 +798,14 @@ static void stygian_record_winner(StygianContext *ctx,
   ctx->winner_ring_head = (slot + 1u) % STYGIAN_WINNER_RING_CAPACITY;
 }
 
+static bool stygian_cmd_ensure_epoch_records(StygianContext *ctx,
+                                             StygianCmdQueueEpoch *slot);
+static bool stygian_cmd_ensure_merge_capacity(StygianContext *ctx,
+                                              uint32_t needed);
+
 static int32_t stygian_cmd_find_queue(StygianContext *ctx, uint32_t thread_id,
                                       bool create_if_missing) {
+  StygianCmdProducerQueue *queue;
   uint32_t i;
   if (!ctx)
     return -1;
@@ -809,12 +815,25 @@ static int32_t stygian_cmd_find_queue(StygianContext *ctx, uint32_t thread_id,
   }
   if (!create_if_missing || ctx->cmd_queue_count >= STYGIAN_CMD_MAX_PRODUCERS)
     return -1;
-  i = ctx->cmd_queue_count++;
-  ctx->cmd_queues[i].owner_thread_id = thread_id;
-  ctx->cmd_queues[i].registered_order = i;
+  i = ctx->cmd_queue_count;
+  queue = &ctx->cmd_queues[i];
+  memset(queue, 0, sizeof(*queue));
+  queue->owner_thread_id = thread_id;
+  queue->registered_order = i;
   ctx->cmd_buffers[i].ctx = ctx;
   ctx->cmd_buffers[i].queue_index = i;
   ctx->cmd_buffers[i].active = false;
+  // Command submission happens outside the frame, so pay the queue setup here
+  // and keep begin_frame from discovering it the hard way.
+  if (!stygian_cmd_ensure_epoch_records(ctx, &queue->epoch[0]) ||
+      !stygian_cmd_ensure_epoch_records(ctx, &queue->epoch[1])) {
+    stygian_free_raw(ctx->allocator, queue->epoch[0].records);
+    stygian_free_raw(ctx->allocator, queue->epoch[1].records);
+    memset(queue, 0, sizeof(*queue));
+    memset(&ctx->cmd_buffers[i], 0, sizeof(ctx->cmd_buffers[i]));
+    return -1;
+  }
+  ctx->cmd_queue_count++;
   return (int32_t)i;
 }
 
@@ -848,6 +867,18 @@ static bool stygian_cmd_ensure_merge_capacity(StygianContext *ctx,
   ctx->cmd_merge_records = records;
   ctx->cmd_merge_capacity = needed;
   return true;
+}
+
+static uint32_t stygian_cmd_pending_total(const StygianContext *ctx) {
+  uint32_t total = 0u;
+  uint32_t i;
+  if (!ctx)
+    return 0u;
+  for (i = 0u; i < ctx->cmd_queue_count; i++) {
+    total += ctx->cmd_queues[i].epoch[0].count;
+    total += ctx->cmd_queues[i].epoch[1].count;
+  }
+  return total;
 }
 
 static bool stygian_cmd_apply_one(StygianContext *ctx,
@@ -1882,6 +1913,15 @@ StygianContext *stygian_create(const StygianConfig *config) {
       ctx->cmd_buffers[qi].queue_index = qi;
       ctx->cmd_buffers[qi].active = false;
     }
+
+    // Most apps drive commands from the main thread, including the misuse
+    // tests. Prewarm that lane here so frame-time command traffic doesn't have
+    // to discover its backing storage on the heap.
+    if (stygian_cmd_find_queue(ctx, stygian_thread_id_u32(), true) < 0 ||
+        !stygian_cmd_ensure_merge_capacity(ctx, STYGIAN_CMD_QUEUE_CAPACITY)) {
+      stygian_destroy(ctx);
+      return NULL;
+    }
   }
 
   // Allocate clip regions
@@ -2562,13 +2602,16 @@ void stygian_end_frame(StygianContext *ctx) {
   // Finalize backend frame state before present.
   stygian_ap_end_frame(ctx->ap);
 
-  // Raw benchmark mode can skip GL present so compositor pacing stays out of
-  // the numbers. Vulkan still presents for now because swapchain progress
-  // depends on it.
+  // Raw mode still lets the backend rotate its per-frame bookkeeping, but only
+  // a real present should count as "present_ms".
   if (ctx->present_enabled || ctx->config.backend == STYGIAN_BACKEND_VULKAN) {
     stygian_ap_swap(ctx->ap);
-    t_present_end = stygian_now_ms_precise();
-    ctx->last_frame_present_ms = (float)(t_present_end - t_submit_end);
+    if (ctx->present_enabled) {
+      t_present_end = stygian_now_ms_precise();
+      ctx->last_frame_present_ms = (float)(t_present_end - t_submit_end);
+    } else {
+      ctx->last_frame_present_ms = 0.0f;
+    }
   } else {
     ctx->last_frame_present_ms = 0.0f;
   }
@@ -3399,6 +3442,12 @@ bool stygian_cmd_submit(StygianContext *ctx, StygianCmdBuffer *buffer) {
   slot = &ctx->cmd_queues[buffer->queue_index].epoch[buffer->epoch];
   if (buffer->begin_index > slot->count)
     return false;
+  if (!stygian_cmd_ensure_merge_capacity(ctx, stygian_cmd_pending_total(ctx))) {
+    stygian_context_log_error(ctx, STYGIAN_ERROR_OUT_OF_MEMORY, 0u,
+                              buffer->source_tag,
+                              "command merge reservation failed");
+    return false;
+  }
   submit_seq = ++ctx->cmd_submit_seq_next;
   for (i = 0u; i < buffer->count; i++) {
     uint32_t idx = buffer->begin_index + i;
@@ -4130,6 +4179,8 @@ void stygian_set_gpu_timing_enabled(StygianContext *ctx, bool enable) {
   if (!ctx)
     return;
   ctx->gpu_timing_enabled = enable;
+  if (ctx->ap)
+    stygian_ap_set_gpu_timing_enabled(ctx->ap, enable);
   if (!enable)
     ctx->last_frame_gpu_ms = 0.0f;
 }

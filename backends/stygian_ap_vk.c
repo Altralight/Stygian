@@ -107,6 +107,7 @@ struct StygianAP {
   uint32_t element_count;
   StygianAllocator *allocator;
   bool present_enabled;
+  bool gpu_timing_enabled;
   uint32_t last_upload_bytes;
   uint32_t last_upload_ranges;
   float last_gpu_ms;
@@ -1222,7 +1223,8 @@ static void update_gpu_timer_sample_for_frame(StygianAP *ap,
   uint32_t query_base;
   VkResult result;
 
-  if (!ap || !ap->gpu_timer_supported || !ap->gpu_timer_query_pool)
+  if (!ap || !ap->gpu_timing_enabled || !ap->gpu_timer_supported ||
+      !ap->gpu_timer_query_pool)
     return;
 
   query_base = frame_slot * 2u;
@@ -2381,6 +2383,7 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   ap->window = config->window;
   ap->max_elements = config->max_elements > 0 ? config->max_elements : 16384;
   ap->present_enabled = true;
+  ap->gpu_timing_enabled = true;
   ap->atlas_width = 1.0f;
   ap->atlas_height = 1.0f;
   ap->px_range = 4.0f;
@@ -3302,7 +3305,7 @@ void stygian_ap_end_frame(StygianAP *ap) {
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
   VkSemaphore signal_semaphores[] = {ap->render_finished[ap->current_frame]};
   uint32_t wait_count = ap->present_enabled ? 1u : 0u;
-  uint32_t signal_count = 1u;
+  uint32_t signal_count = ap->present_enabled ? 1u : 0u;
 
   VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -3312,7 +3315,7 @@ void stygian_ap_end_frame(StygianAP *ap) {
       .commandBufferCount = 1,
       .pCommandBuffers = &cmd,
       .signalSemaphoreCount = signal_count,
-      .pSignalSemaphores = signal_semaphores,
+      .pSignalSemaphores = signal_count ? signal_semaphores : NULL,
   };
 
   double submit_t0 = stygian_vk_now_ms();
@@ -3412,6 +3415,14 @@ void stygian_ap_set_present_enabled(StygianAP *ap, bool enable) {
   if (enable) {
     cleanup_raw_target(ap);
   }
+}
+
+void stygian_ap_set_gpu_timing_enabled(StygianAP *ap, bool enable) {
+  if (!ap)
+    return;
+  ap->gpu_timing_enabled = enable;
+  if (!enable)
+    ap->last_gpu_ms = 0.0f;
 }
 
 StygianAPTexture stygian_ap_texture_create(StygianAP *ap, int w, int h,

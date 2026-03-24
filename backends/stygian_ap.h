@@ -145,6 +145,10 @@ void stygian_ap_swap(StygianAP *ap);
 // offscreen so the window system stays out of the numbers.
 void stygian_ap_set_present_enabled(StygianAP *ap, bool enable);
 
+// Toggle backend GPU timing overhead. Backends should treat "off" as a hard
+// hint and skip any timer bookkeeping they would otherwise do for profiling.
+void stygian_ap_set_gpu_timing_enabled(StygianAP *ap, bool enable);
+
 // Make this AP's context current (restores main window context)
 void stygian_ap_make_current(StygianAP *ap);
 

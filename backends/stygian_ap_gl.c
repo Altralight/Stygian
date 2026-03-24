@@ -416,6 +416,7 @@ struct StygianAP {
   bool initialized;
   StygianAPAdapterClass adapter_class;
   bool present_enabled;
+  bool gpu_timing_enabled;
   bool output_color_transform_enabled;
   float output_color_matrix[9];
   bool output_src_srgb_transfer;
@@ -428,6 +429,7 @@ struct StygianAP {
 
   // Shader file modification times for auto-reload
   uint64_t shader_load_time; // Time when shaders were last loaded
+  bool main_context_current;
 
   uint32_t last_upload_bytes;
   uint32_t last_upload_ranges;
@@ -1881,6 +1883,7 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   ap->output_src_gamma = 2.4f;
   ap->output_dst_gamma = 2.4f;
   ap->present_enabled = true;
+  ap->gpu_timing_enabled = true;
   stygian_ap_raw_target_reset(ap);
   ap->cached_screen_w = -1;
   ap->cached_screen_h = -1;
@@ -1918,6 +1921,7 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
     cfg_free(config->allocator, ap);
     return NULL;
   }
+  ap->main_context_current = true;
 
   stygian_window_gl_set_vsync(config->window, true);
   printf("[Stygian AP] VSync enabled\n");
@@ -2561,6 +2565,14 @@ void stygian_ap_set_present_enabled(StygianAP *ap, bool enable) {
   }
 }
 
+void stygian_ap_set_gpu_timing_enabled(StygianAP *ap, bool enable) {
+  if (!ap)
+    return;
+  ap->gpu_timing_enabled = enable;
+  if (!enable)
+    ap->last_gpu_ms = 0.0f;
+}
+
 // ============================================================================
 // Textures
 // ============================================================================
@@ -2706,6 +2718,7 @@ void stygian_ap_surface_begin(StygianAP *ap, StygianAPSurface *surface,
     printf("[Stygian AP GL] Failed to make surface current\n");
     return;
   }
+  ap->main_context_current = false;
 
   glViewport(0, 0, width, height);
   glClearColor(0.235f, 0.259f, 0.294f, 1.0f);
@@ -2753,10 +2766,14 @@ void stygian_ap_surface_swap(StygianAP *ap, StygianAPSurface *surface) {
 void stygian_ap_make_current(StygianAP *ap) {
   if (!ap)
     return;
+  if (ap->main_context_current)
+    return;
 
   if (!stygian_window_gl_make_current(ap->window, ap->gl_context)) {
     printf("[Stygian AP GL] Failed to restore main context\n");
+    return;
   }
+  ap->main_context_current = true;
 }
 
 void stygian_ap_set_viewport(StygianAP *ap, int width, int height) {

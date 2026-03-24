@@ -141,6 +141,27 @@ typedef struct __GLsync *GLsync;
 #ifndef GL_TEXTURE0
 #define GL_TEXTURE0 0x84C0
 #endif
+#ifndef GL_MAX_TEXTURE_IMAGE_UNITS
+#define GL_MAX_TEXTURE_IMAGE_UNITS 0x8872
+#endif
+#ifndef GL_MAX_FRAGMENT_UNIFORM_COMPONENTS
+#define GL_MAX_FRAGMENT_UNIFORM_COMPONENTS 0x8B49
+#endif
+#ifndef GL_MAX_VARYING_COMPONENTS
+#define GL_MAX_VARYING_COMPONENTS 0x8B4B
+#endif
+#ifndef GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
+#define GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS 0x8B4D
+#endif
+#ifndef GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS
+#define GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS 0x90D6
+#endif
+#ifndef GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS
+#define GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS 0x90DA
+#endif
+#ifndef GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS
+#define GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS 0x90DC
+#endif
 #ifndef GL_TIME_ELAPSED
 #define GL_TIME_ELAPSED 0x88BF
 #endif
@@ -456,7 +477,7 @@ struct StygianAP {
   uint64_t capture_frame_counter;
 };
 
-#define STYGIAN_GL_IMAGE_SAMPLERS 16
+#define STYGIAN_GL_IMAGE_SAMPLERS 8
 #define STYGIAN_GL_IMAGE_UNIT_BASE 2 // units 0,1 reserved for font atlas etc.
 #define STYGIAN_GL_CAPTURE_PBO_SLOTS 4
 #define STYGIAN_GL_GPU_QUERY_SLOTS 8
@@ -797,69 +818,692 @@ static char *load_shader_file(StygianAP *ap, const char *filename) {
   return source;
 }
 
-// Compile and link shader program, returns program handle or 0 on failure
-// Does NOT modify ap->program - caller decides what to do with result
-static GLuint compile_program_internal(
-    StygianAP *ap, GLint *out_loc_screen_size, GLint *out_loc_font_tex,
-    GLint *out_loc_image_tex, GLint *out_loc_atlas_size,
-    GLint *out_loc_px_range, GLint *out_loc_output_transform_enabled,
-    GLint *out_loc_output_matrix, GLint *out_loc_output_src_srgb,
-    GLint *out_loc_output_src_gamma, GLint *out_loc_output_dst_srgb,
-    GLint *out_loc_output_dst_gamma) {
-  char *vert_src = load_shader_file(ap, "stygian.vert");
-  if (!vert_src)
-    return 0;
-
-  char *frag_src = load_shader_file(ap, "stygian.frag");
-  if (!frag_src) {
-    ap_free(ap, vert_src);
-    return 0;
-  }
-
+#if 0
+static GLuint compile_program_source_pair(const char *tag, const char *vert_src,
+                                          const char *frag_src) {
   GLuint vs = compile_shader(GL_VERTEX_SHADER, vert_src);
   GLuint fs = compile_shader(GL_FRAGMENT_SHADER, frag_src);
-
-  ap_free(ap, vert_src);
-  ap_free(ap, frag_src);
+  GLuint program;
+  GLint status;
 
   if (!vs || !fs) {
     if (vs)
       glDeleteShader(vs);
     if (fs)
       glDeleteShader(fs);
+    fprintf(stderr, "[Stygian AP] %s compile failed\n", tag);
+    fflush(stderr);
     return 0;
   }
 
-  GLuint program = glCreateProgram();
+  program = glCreateProgram();
   glAttachShader(program, vs);
   glAttachShader(program, fs);
   glLinkProgram(program);
-
-  // Shaders can be deleted after linking
   glDeleteShader(vs);
   glDeleteShader(fs);
 
-  GLint status;
   glGetProgramiv(program, GL_LINK_STATUS, &status);
   if (!status) {
     char log[4096];
     glGetProgramInfoLog(program, sizeof(log), NULL, log);
-    printf("[Stygian AP] Program link error:\n%s\n", log);
+    fprintf(stderr, "[Stygian AP] %s link error:\n%s\n", tag, log);
+    fflush(stderr);
     glDeleteProgram(program);
     return 0;
   }
 
-  // Validate program
+  fprintf(stderr, "[Stygian AP] %s link ok\n", tag);
+  fflush(stderr);
+  return program;
+}
+
+static void stygian_ap_run_link_smoke_tests(void) {
+  static const char *k_vert_min =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "void main() {\n"
+      "  gl_Position = vec4(aPos, 0.0, 1.0);\n"
+      "  vColor = vec4(1.0);\n"
+      "}\n";
+  static const char *k_frag_min =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "void main() {\n"
+      "  fragColor = vColor;\n"
+      "}\n";
+  static const char *k_vert_iface =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  gl_Position = vec4(aPos, 0.0, 1.0);\n"
+      "  vColor = vec4(1.0);\n"
+      "  vBorderColor = vec4(0.0);\n"
+      "  vRadius = vec4(4.0);\n"
+      "  vUV = vec4(0.0, 0.0, 1.0, 1.0);\n"
+      "  vType = 0u;\n"
+      "  vBlend = 1.0;\n"
+      "  vHover = 0.0;\n"
+      "  vLocalPos = aPos;\n"
+      "  vSize = vec2(32.0, 32.0);\n"
+      "  vInstanceID = 0u;\n"
+      "  vTextureID = 0u;\n"
+      "  vReserved0 = vec4(0.0);\n"
+      "  vWorldPos = aPos;\n"
+      "  vClipID = 0u;\n"
+      "  vClipRect = vec4(0.0);\n"
+      "  vGlowIntensity = 0.0;\n"
+      "}\n";
+  static const char *k_vert_resources =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "struct SoAEffects { vec2 shadow_offset; float shadow_blur; float shadow_spread; vec4 shadow_color; vec4 gradient_start; vec4 gradient_end; float hover; float blend; float gradient_angle; float blur_radius; float glow_intensity; uint parent_id; vec2 _pad; };\n"
+      "struct SoATransform { vec4 row0; vec4 row1; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 3) readonly buffer ClipBuffer { vec4 clip_rects[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "layout(std430, binding = 6) readonly buffer SoAEffectsBuffer { SoAEffects soa_effects[]; };\n"
+      "layout(std430, binding = 7) readonly buffer SoATransformBuffer { SoATransform soa_transform[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  SoAAppearance a = soa_appearance[gl_InstanceID];\n"
+      "  SoAEffects fx = soa_effects[gl_InstanceID];\n"
+      "  SoATransform t = soa_transform[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(h.w, h.h);\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 elementPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 pixelPos = vec2(t.row0.x * elementPos.x + t.row0.y * elementPos.y + t.row0.z,\n"
+      "                      t.row1.x * elementPos.x + t.row1.y * elementPos.y + t.row1.z);\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = a.border_color;\n"
+      "  vRadius = a.radius;\n"
+      "  vUV = a.uv;\n"
+      "  vType = h.type;\n"
+      "  vBlend = fx.blend;\n"
+      "  vHover = fx.hover;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vInstanceID = gl_InstanceID;\n"
+      "  vTextureID = h.texture_id;\n"
+      "  vReserved0 = a.control_points;\n"
+      "  vWorldPos = pixelPos;\n"
+      "  vClipID = (h.flags & 0x0000FF00u) >> 8u;\n"
+      "  vClipRect = (vClipID != 0u) ? clip_rects[vClipID] : vec4(0.0);\n"
+      "  vGlowIntensity = fx.glow_intensity;\n"
+      "}\n";
+  static const char *k_vert_hot_only =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(max(h.w, 1.0), max(h.h, 1.0));\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 pixelPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = vec4(0.0);\n"
+      "  vRadius = vec4(0.0);\n"
+      "  vUV = vec4(0.0, 0.0, 1.0, 1.0);\n"
+      "  vType = h.type;\n"
+      "  vBlend = 1.0;\n"
+      "  vHover = 0.0;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vInstanceID = gl_InstanceID;\n"
+      "  vTextureID = h.texture_id;\n"
+      "  vReserved0 = vec4(0.0);\n"
+      "  vWorldPos = pixelPos;\n"
+      "  vClipID = 0u;\n"
+      "  vClipRect = vec4(0.0);\n"
+      "  vGlowIntensity = 0.0;\n"
+      "}\n";
+  static const char *k_vert_hot_appearance =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  SoAAppearance a = soa_appearance[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(max(h.w, 1.0), max(h.h, 1.0));\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 pixelPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = a.border_color;\n"
+      "  vRadius = a.radius;\n"
+      "  vUV = a.uv;\n"
+      "  vType = h.type;\n"
+      "  vBlend = 1.0;\n"
+      "  vHover = 0.0;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vInstanceID = gl_InstanceID;\n"
+      "  vTextureID = h.texture_id;\n"
+      "  vReserved0 = a.control_points;\n"
+      "  vWorldPos = pixelPos;\n"
+      "  vClipID = 0u;\n"
+      "  vClipRect = vec4(0.0);\n"
+      "  vGlowIntensity = 0.0;\n"
+      "}\n";
+  static const char *k_vert_hot_appearance_clip =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "layout(std430, binding = 3) readonly buffer ClipBuffer { vec4 clip_rects[]; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  SoAAppearance a = soa_appearance[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(max(h.w, 1.0), max(h.h, 1.0));\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 pixelPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = a.border_color;\n"
+      "  vRadius = a.radius;\n"
+      "  vUV = a.uv;\n"
+      "  vType = h.type;\n"
+      "  vBlend = 1.0;\n"
+      "  vHover = 0.0;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vInstanceID = gl_InstanceID;\n"
+      "  vTextureID = h.texture_id;\n"
+      "  vReserved0 = a.control_points;\n"
+      "  vWorldPos = pixelPos;\n"
+      "  vClipID = (h.flags & 0x0000FF00u) >> 8u;\n"
+      "  vClipRect = (vClipID != 0u && clip_rects.length() > int(vClipID)) ? clip_rects[vClipID] : vec4(0.0);\n"
+      "  vGlowIntensity = 0.0;\n"
+      "}\n";
+  static const char *k_vert_hot_appearance_effects =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "struct SoAEffects { vec2 shadow_offset; float shadow_blur; float shadow_spread; vec4 shadow_color; vec4 gradient_start; vec4 gradient_end; float hover; float blend; float gradient_angle; float blur_radius; float glow_intensity; uint parent_id; vec2 _pad; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "layout(std430, binding = 6) readonly buffer SoAEffectsBuffer { SoAEffects soa_effects[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  SoAAppearance a = soa_appearance[gl_InstanceID];\n"
+      "  SoAEffects fx = soa_effects[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(max(h.w, 1.0), max(h.h, 1.0));\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 pixelPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = a.border_color;\n"
+      "  vRadius = a.radius;\n"
+      "  vUV = a.uv;\n"
+      "  vType = h.type;\n"
+      "  vBlend = fx.blend;\n"
+      "  vHover = fx.hover;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vInstanceID = gl_InstanceID;\n"
+      "  vTextureID = h.texture_id;\n"
+      "  vReserved0 = a.control_points;\n"
+      "  vWorldPos = pixelPos;\n"
+      "  vClipID = 0u;\n"
+      "  vClipRect = vec4(0.0);\n"
+      "  vGlowIntensity = fx.glow_intensity;\n"
+      "}\n";
+  static const char *k_vert_hot_appearance_transform =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "struct SoATransform { vec4 row0; vec4 row1; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "layout(std430, binding = 7) readonly buffer SoATransformBuffer { SoATransform soa_transform[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) flat out float vBlend;\n"
+      "layout(location = 6) flat out float vHover;\n"
+      "layout(location = 7) out vec2 vLocalPos;\n"
+      "layout(location = 8) out vec2 vSize;\n"
+      "layout(location = 9) flat out uint vInstanceID;\n"
+      "layout(location = 10) flat out uint vTextureID;\n"
+      "layout(location = 11) flat out vec4 vReserved0;\n"
+      "layout(location = 12) out vec2 vWorldPos;\n"
+      "layout(location = 13) flat out uint vClipID;\n"
+      "layout(location = 14) flat out vec4 vClipRect;\n"
+      "layout(location = 15) flat out float vGlowIntensity;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  SoAAppearance a = soa_appearance[gl_InstanceID];\n"
+      "  SoATransform t = soa_transform[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(max(h.w, 1.0), max(h.h, 1.0));\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 elementPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 pixelPos = vec2(t.row0.x * elementPos.x + t.row0.y * elementPos.y + t.row0.z,\n"
+      "                      t.row1.x * elementPos.x + t.row1.y * elementPos.y + t.row1.z);\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = a.border_color;\n"
+      "  vRadius = a.radius;\n"
+      "  vUV = a.uv;\n"
+      "  vType = h.type;\n"
+      "  vBlend = 1.0;\n"
+      "  vHover = 0.0;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vInstanceID = gl_InstanceID;\n"
+      "  vTextureID = h.texture_id;\n"
+      "  vReserved0 = a.control_points;\n"
+      "  vWorldPos = pixelPos;\n"
+      "  vClipID = 0u;\n"
+      "  vClipRect = vec4(0.0);\n"
+      "  vGlowIntensity = 0.0;\n"
+      "}\n";
+  static const char *k_frag_iface =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 1) flat in vec4 vBorderColor;\n"
+      "layout(location = 2) flat in vec4 vRadius;\n"
+      "layout(location = 3) flat in vec4 vUV;\n"
+      "layout(location = 4) flat in uint vType;\n"
+      "layout(location = 5) flat in float vBlend;\n"
+      "layout(location = 6) flat in float vHover;\n"
+      "layout(location = 7) in vec2 vLocalPos;\n"
+      "layout(location = 8) in vec2 vSize;\n"
+      "layout(location = 9) flat in uint vInstanceID;\n"
+      "layout(location = 10) flat in uint vTextureID;\n"
+      "layout(location = 11) flat in vec4 vReserved0;\n"
+      "layout(location = 12) in vec2 vWorldPos;\n"
+      "layout(location = 13) flat in uint vClipID;\n"
+      "layout(location = 14) flat in vec4 vClipRect;\n"
+      "layout(location = 15) flat in float vGlowIntensity;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "void main() {\n"
+      "  fragColor = vColor + vBorderColor * 0.0 + vec4(vRadius.xy, vUV.xy) * 0.0 +\n"
+      "              vec4(vBlend + vHover + float(vType) + float(vInstanceID) + float(vTextureID),\n"
+      "                   vLocalPos.x + vSize.x + vReserved0.x + vWorldPos.x + float(vClipID) + vGlowIntensity,\n"
+      "                   0.0, 1.0) * 0.0;\n"
+      "  fragColor += vClipRect * 0.0;\n"
+      "}\n";
+  static const char *k_frag_iface_samplers =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 1) flat in vec4 vBorderColor;\n"
+      "layout(location = 2) flat in vec4 vRadius;\n"
+      "layout(location = 3) flat in vec4 vUV;\n"
+      "layout(location = 4) flat in uint vType;\n"
+      "layout(location = 5) flat in float vBlend;\n"
+      "layout(location = 6) flat in float vHover;\n"
+      "layout(location = 7) in vec2 vLocalPos;\n"
+      "layout(location = 8) in vec2 vSize;\n"
+      "layout(location = 9) flat in uint vInstanceID;\n"
+      "layout(location = 10) flat in uint vTextureID;\n"
+      "layout(location = 11) flat in vec4 vReserved0;\n"
+      "layout(location = 12) in vec2 vWorldPos;\n"
+      "layout(location = 13) flat in uint vClipID;\n"
+      "layout(location = 14) flat in vec4 vClipRect;\n"
+      "layout(location = 15) flat in float vGlowIntensity;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "layout(binding = 1) uniform sampler2D uFontTex;\n"
+      "layout(binding = 2) uniform sampler2D uImageTex[16];\n"
+      "uniform vec2 uAtlasSize;\n"
+      "uniform float uPxRange;\n"
+      "void main() {\n"
+      "  vec4 s = texture(uFontTex, vec2(0.0)) * 0.0 + texture(uImageTex[0], vec2(0.0)) * 0.0;\n"
+      "  s += vBorderColor * 0.0 + vec4(vRadius.xy, vUV.xy) * 0.0 + vClipRect * 0.0;\n"
+      "  s += vec4(vBlend + vHover + float(vType) + float(vInstanceID) + float(vTextureID),\n"
+      "            vLocalPos.x + vSize.x + vReserved0.x + vWorldPos.x + float(vClipID) + vGlowIntensity,\n"
+      "            uAtlasSize.x + uPxRange, 1.0) * 0.0;\n"
+      "  fragColor = vColor + s;\n"
+      "}\n";
+  static const char *k_frag_resources =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "layout(std430, binding = 3) readonly buffer ClipBuffer { vec4 clip_rects[]; };\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "struct SoAEffects { vec2 shadow_offset; float shadow_blur; float shadow_spread; vec4 shadow_color; vec4 gradient_start; vec4 gradient_end; float hover; float blend; float gradient_angle; float blur_radius; float glow_intensity; uint parent_id; vec2 _pad; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "layout(std430, binding = 6) readonly buffer SoAEffectsBuffer { SoAEffects soa_effects[]; };\n"
+      "layout(binding = 1) uniform sampler2D uFontTex;\n"
+      "layout(binding = 2) uniform sampler2D uImageTex[16];\n"
+      "uniform vec2 uAtlasSize;\n"
+      "uniform float uPxRange;\n"
+      "void main() {\n"
+      "  vec4 s = texture(uFontTex, vec2(0.0)) * 0.0 + texture(uImageTex[0], vec2(0.0)) * 0.0;\n"
+      "  if (clip_rects.length() > 0) s += clip_rects[0] * 0.0;\n"
+      "  if (soa_hot.length() > 0) s += soa_hot[0].color * 0.0;\n"
+      "  if (soa_appearance.length() > 0) s += soa_appearance[0].uv * 0.0;\n"
+      "  if (soa_effects.length() > 0) s += vec4(soa_effects[0].glow_intensity) * 0.0;\n"
+      "  s += vec4(uAtlasSize, uPxRange, 0.0) * 0.0;\n"
+      "  fragColor = vColor + s;\n"
+      "}\n";
+  static const char *k_frag_samplers =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "layout(binding = 1) uniform sampler2D uFontTex;\n"
+      "layout(binding = 2) uniform sampler2D uImageTex[16];\n"
+      "uniform vec2 uAtlasSize;\n"
+      "uniform float uPxRange;\n"
+      "void main() {\n"
+      "  vec4 s = texture(uFontTex, vec2(0.0)) * 0.0 + texture(uImageTex[0], vec2(0.0)) * 0.0;\n"
+      "  s += vec4(uAtlasSize, uPxRange, 0.0) * 0.0;\n"
+      "  fragColor = vColor + s;\n"
+      "}\n";
+  static const char *k_frag_ssbo =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "layout(std430, binding = 3) readonly buffer ClipBuffer { vec4 clip_rects[]; };\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "struct SoAEffects { vec2 shadow_offset; float shadow_blur; float shadow_spread; vec4 shadow_color; vec4 gradient_start; vec4 gradient_end; float hover; float blend; float gradient_angle; float blur_radius; float glow_intensity; uint parent_id; vec2 _pad; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "layout(std430, binding = 6) readonly buffer SoAEffectsBuffer { SoAEffects soa_effects[]; };\n"
+      "void main() {\n"
+      "  vec4 s = vec4(0.0);\n"
+      "  if (clip_rects.length() > 0) s += clip_rects[0] * 0.0;\n"
+      "  if (soa_hot.length() > 0) s += soa_hot[0].color * 0.0;\n"
+      "  if (soa_appearance.length() > 0) s += soa_appearance[0].uv * 0.0;\n"
+      "  if (soa_effects.length() > 0) s += vec4(soa_effects[0].glow_intensity) * 0.0;\n"
+      "  fragColor = vColor + s;\n"
+      "}\n";
+  static const char *k_frag_clip_ssbo =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "layout(std430, binding = 3) readonly buffer ClipBuffer { vec4 clip_rects[]; };\n"
+      "void main() {\n"
+      "  vec4 s = vec4(0.0);\n"
+      "  if (clip_rects.length() > 0) s += clip_rects[0] * 0.0;\n"
+      "  fragColor = vColor + s;\n"
+      "}\n";
+  static const char *k_frag_effects_ssbo =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "struct SoAEffects { vec2 shadow_offset; float shadow_blur; float shadow_spread; vec4 shadow_color; vec4 gradient_start; vec4 gradient_end; float hover; float blend; float gradient_angle; float blur_radius; float glow_intensity; uint parent_id; vec2 _pad; };\n"
+      "layout(std430, binding = 6) readonly buffer SoAEffectsBuffer { SoAEffects soa_effects[]; };\n"
+      "void main() {\n"
+      "  vec4 s = vec4(0.0);\n"
+      "  if (soa_effects.length() > 0) s += vec4(soa_effects[0].glow_intensity) * 0.0;\n"
+      "  fragColor = vColor + s;\n"
+      "}\n";
+  GLuint program = 0;
+
+  program = compile_program_source_pair("Link smoke/minimal", k_vert_min,
+                                        k_frag_min);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/interface", k_vert_iface,
+                                        k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/hot-only+interface",
+                                        k_vert_hot_only, k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/hot+appearance+interface",
+                                        k_vert_hot_appearance, k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/hot+appearance+clip+interface",
+                                        k_vert_hot_appearance_clip,
+                                        k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program =
+      compile_program_source_pair("Link smoke/hot+appearance+effects+interface",
+                                  k_vert_hot_appearance_effects,
+                                  k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair(
+      "Link smoke/hot+appearance+transform+interface",
+      k_vert_hot_appearance_transform, k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/vertex-resources+interface",
+                                        k_vert_resources, k_frag_iface);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/interface+samplers",
+                                        k_vert_iface, k_frag_iface_samplers);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair(
+      "Link smoke/vertex-resources+interface+samplers", k_vert_resources,
+      k_frag_iface_samplers);
+  if (program)
+    glDeleteProgram(program);
+
+  fprintf(stderr, "[Stygian AP] Running Link smoke/samplers\n");
+  fflush(stderr);
+  program = compile_program_source_pair("Link smoke/samplers", k_vert_min,
+                                        k_frag_samplers);
+  if (program)
+    glDeleteProgram(program);
+
+  fprintf(stderr, "[Stygian AP] Running Link smoke/fragment-ssbo\n");
+  fflush(stderr);
+  program = compile_program_source_pair("Link smoke/clip-ssbo", k_vert_min,
+                                        k_frag_clip_ssbo);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/effects-ssbo", k_vert_min,
+                                        k_frag_effects_ssbo);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/fragment-ssbo", k_vert_min,
+                                        k_frag_ssbo);
+  if (program)
+    glDeleteProgram(program);
+
+  program = compile_program_source_pair("Link smoke/resources", k_vert_min,
+                                        k_frag_resources);
+  if (program)
+    glDeleteProgram(program);
+}
+#endif
+
+static GLuint compile_program_with_sources(
+    const char *tag, const char *vert_src, const char *frag_src,
+    GLint *out_loc_screen_size, GLint *out_loc_font_tex,
+    GLint *out_loc_image_tex, GLint *out_loc_atlas_size,
+    GLint *out_loc_px_range, GLint *out_loc_output_transform_enabled,
+    GLint *out_loc_output_matrix, GLint *out_loc_output_src_srgb,
+    GLint *out_loc_output_src_gamma, GLint *out_loc_output_dst_srgb,
+    GLint *out_loc_output_dst_gamma) {
+  GLuint vs = compile_shader(GL_VERTEX_SHADER, vert_src);
+  GLuint fs = compile_shader(GL_FRAGMENT_SHADER, frag_src);
+  GLuint program;
+  GLint status;
+
+  if (!vs || !fs) {
+    if (vs)
+      glDeleteShader(vs);
+    if (fs)
+      glDeleteShader(fs);
+    fprintf(stderr, "[Stygian AP] %s compile failed\n", tag);
+    fflush(stderr);
+    return 0;
+  }
+
+  program = glCreateProgram();
+  glAttachShader(program, vs);
+  glAttachShader(program, fs);
+  glLinkProgram(program);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+
+  glGetProgramiv(program, GL_LINK_STATUS, &status);
+  if (!status) {
+    char log[4096];
+    glGetProgramInfoLog(program, sizeof(log), NULL, log);
+    fprintf(stderr, "[Stygian AP] %s link error:\n%s\n", tag, log);
+    fflush(stderr);
+    glDeleteProgram(program);
+    return 0;
+  }
+
   glValidateProgram(program);
   glGetProgramiv(program, GL_VALIDATE_STATUS, &status);
   if (!status) {
     char log[4096];
     glGetProgramInfoLog(program, sizeof(log), NULL, log);
-    printf("[Stygian AP] Program validation warning:\n%s\n", log);
-    // Don't fail on validation - some drivers are picky
+    fprintf(stderr, "[Stygian AP] %s validation warning:\n%s\n", tag, log);
+    fflush(stderr);
   }
 
-  // Get uniform locations
   if (out_loc_screen_size)
     *out_loc_screen_size = glGetUniformLocation(program, "uScreenSize");
   if (out_loc_font_tex)
@@ -889,6 +1533,169 @@ static GLuint compile_program_internal(
     *out_loc_output_dst_gamma =
         glGetUniformLocation(program, "uOutputDstGamma");
 
+  fprintf(stderr, "[Stygian AP] %s link ok\n", tag);
+  fflush(stderr);
+  return program;
+}
+
+static GLuint compile_gl_compat_program(
+    const char *tag, GLint *out_loc_screen_size, GLint *out_loc_font_tex,
+    GLint *out_loc_image_tex, GLint *out_loc_atlas_size,
+    GLint *out_loc_px_range, GLint *out_loc_output_transform_enabled,
+    GLint *out_loc_output_matrix, GLint *out_loc_output_src_srgb,
+    GLint *out_loc_output_src_gamma, GLint *out_loc_output_dst_srgb,
+    GLint *out_loc_output_dst_gamma) {
+  static const char *k_vert =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "struct SoAHot { float x, y, w, h; vec4 color; uint texture_id; uint type; uint flags; float z; };\n"
+      "struct SoAAppearance { vec4 border_color; vec4 radius; vec4 uv; vec4 control_points; };\n"
+      "layout(std430, binding = 4) readonly buffer SoAHotBuffer { SoAHot soa_hot[]; };\n"
+      "layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer { SoAAppearance soa_appearance[]; };\n"
+      "uniform vec2 uScreenSize;\n"
+      "layout(location = 0) flat out vec4 vColor;\n"
+      "layout(location = 1) flat out vec4 vBorderColor;\n"
+      "layout(location = 2) flat out vec4 vRadius;\n"
+      "layout(location = 3) flat out vec4 vUV;\n"
+      "layout(location = 4) flat out uint vType;\n"
+      "layout(location = 5) out vec2 vLocalPos;\n"
+      "layout(location = 6) out vec2 vSize;\n"
+      "layout(location = 7) flat out uint vTextureID;\n"
+      "void main() {\n"
+      "  SoAHot h = soa_hot[gl_InstanceID];\n"
+      "  if ((h.flags & 1u) == 0u) { gl_Position = vec4(-2.0, -2.0, 0.0, 1.0); return; }\n"
+      "  SoAAppearance a = soa_appearance[gl_InstanceID];\n"
+      "  vec2 uv01 = aPos * 0.5 + 0.5;\n"
+      "  vec2 size = vec2(h.w, h.h);\n"
+      "  vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;\n"
+      "  vec2 elementPos = vec2(h.x, h.y) + localPos;\n"
+      "  vec2 pixelPos = elementPos;\n"
+      "  vec2 ndc = (pixelPos / uScreenSize) * 2.0 - 1.0;\n"
+      "  ndc.y = -ndc.y;\n"
+      "  gl_Position = vec4(ndc, h.z, 1.0);\n"
+      "  vColor = h.color;\n"
+      "  vBorderColor = a.border_color;\n"
+      "  vRadius = a.radius;\n"
+      "  vUV = a.uv;\n"
+      "  vType = h.type & 0x0000ffffu;\n"
+      "  vLocalPos = localPos;\n"
+      "  vSize = size;\n"
+      "  vTextureID = h.texture_id;\n"
+      "}\n";
+  static const char *k_frag =
+      "#version 430 core\n"
+      "layout(location = 0) flat in vec4 vColor;\n"
+      "layout(location = 1) flat in vec4 vBorderColor;\n"
+      "layout(location = 2) flat in vec4 vRadius;\n"
+      "layout(location = 3) flat in vec4 vUV;\n"
+      "layout(location = 4) flat in uint vType;\n"
+      "layout(location = 5) in vec2 vLocalPos;\n"
+      "layout(location = 6) in vec2 vSize;\n"
+      "layout(location = 7) flat in uint vTextureID;\n"
+      "layout(location = 0) out vec4 fragColor;\n"
+      "layout(binding = 1) uniform sampler2D uFontTex;\n"
+      "layout(binding = 2) uniform sampler2D uImageTex[8];\n"
+      "uniform vec2 uAtlasSize;\n"
+      "uniform float uPxRange;\n"
+      "float sdRoundedBox(vec2 p, vec2 b, vec4 r) { r.xy = (p.x > 0.0) ? r.yz : r.xw; r.x = (p.y > 0.0) ? r.y : r.x; vec2 q = abs(p) - b + r.x; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x; }\n"
+      "float sdBox(vec2 p, vec2 b) { vec2 d = abs(p) - b; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0); }\n"
+      "float sdCircle(vec2 p, float r) { return length(p) - r; }\n"
+      "float sdSegment(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h); }\n"
+      "float render_rect(vec2 p, vec2 center, vec4 r) { return sdRoundedBox(p, center - 1.0, vec4(r.z, r.y, r.w, r.x)); }\n"
+      "float render_rect_outline(vec2 p, vec2 center, vec4 r) { float outer = sdRoundedBox(p, center - 1.0, vec4(r.z, r.y, r.w, r.x)); float inner = sdRoundedBox(p, center - 3.0, vec4(max(0.0, r.z - 2.0), max(0.0, r.y - 2.0), max(0.0, r.w - 2.0), max(0.0, r.x - 2.0))); return max(outer, -inner); }\n"
+      "float render_circle(vec2 p, vec2 center) { return sdCircle(p, min(center.x, center.y) - 1.0); }\n"
+      "float render_separator(vec2 p) { return abs(p.y) - 0.5; }\n"
+      "float render_icon_close(vec2 p, vec2 center) { float arm = min(center.x, center.y) * 0.35; float d1 = sdSegment(p, vec2(-arm, -arm), vec2(arm, arm)) - 1.5; float d2 = sdSegment(p, vec2(-arm, arm), vec2(arm, -arm)) - 1.5; return min(d1, d2); }\n"
+      "float render_icon_maximize(vec2 p, vec2 center) { float box_size = min(center.x, center.y) * 0.4; float outer = sdBox(p, vec2(box_size)); float inner = sdBox(p, vec2(box_size - 1.5)); return max(outer, -inner); }\n"
+      "float render_icon_minimize(vec2 p, vec2 center) { return sdBox(p, vec2(center.x * 0.5, 1.0)); }\n"
+      "float render_icon_plus(vec2 p, vec2 center) { float arm = min(center.x, center.y) * 0.46; float d1 = sdSegment(p, vec2(-arm, 0.0), vec2(arm, 0.0)) - 1.35; float d2 = sdSegment(p, vec2(0.0, -arm), vec2(0.0, arm)) - 1.35; return min(d1, d2); }\n"
+      "float render_icon_chevron(vec2 p, vec2 center) { float arm = min(center.x, center.y) * 0.50; vec2 left = vec2(-arm, -arm * 0.25); vec2 apex = vec2(0.0, arm * 0.60); vec2 right = vec2(arm, -arm * 0.25); float d1 = sdSegment(p, left, apex) - 1.45; float d2 = sdSegment(p, apex, right) - 1.45; return min(d1, d2); }\n"
+      "vec4 render_text(vec2 local_pos, vec2 size, vec4 uv, vec4 color, float blend) { vec2 uv_norm = local_pos / size; uv_norm.y = 1.0 - uv_norm.y; vec2 tex_coord = mix(uv.xy, uv.zw, uv_norm); vec4 mtsdf = texture(uFontTex, tex_coord); float sd = max(min(mtsdf.r, mtsdf.g), min(max(mtsdf.r, mtsdf.g), mtsdf.b)); vec2 glyph_texel_span = max(abs(uv.zw - uv.xy) * uAtlasSize, vec2(1.0)); vec2 axis_px_range = vec2(uPxRange) * size / glyph_texel_span; float screen_px_range = max(0.5 * (axis_px_range.x + axis_px_range.y), 1.0); float alpha = clamp((sd - 0.5) * screen_px_range + 0.5, 0.0, 1.0); return vec4(color.rgb, alpha * color.a * blend); }\n"
+      "vec4 render_texture(vec2 local_pos, vec2 size, vec4 uv_rect, vec4 color, uint tex_slot) { vec2 uv01 = local_pos / size; vec2 uv = mix(uv_rect.xy, uv_rect.zw, uv01); if (tex_slot >= uint(8)) return vec4(1.0, 0.0, 1.0, 1.0) * color; return texture(uImageTex[int(tex_slot)], uv) * color; }\n"
+      "void main() {\n"
+      "  vec4 col = vColor;\n"
+      "  vec2 center = vSize * 0.5;\n"
+      "  vec2 p = vLocalPos - center;\n"
+      "  float d = 1000.0;\n"
+      "  float aa = 1.5;\n"
+      "  if (vType == 6u) { fragColor = render_text(vLocalPos, vSize, vUV, col, 1.0); if (fragColor.a < 0.01) discard; return; }\n"
+      "  if (vType == 10u) { fragColor = render_texture(vLocalPos, vSize, vUV, col, vTextureID); return; }\n"
+      "  if (vType == 0u) { d = render_rect(p, center, vRadius); aa = fwidth(d) * 1.5; }\n"
+      "  else if (vType == 1u) { d = render_rect_outline(p, center, vRadius); aa = fwidth(d) * 1.5; }\n"
+      "  else if (vType == 2u) { d = render_circle(p, center); aa = fwidth(d) * 1.5; }\n"
+      "  else if (vType == 5u) { d = render_rect(p, center, vRadius); aa = fwidth(d) * 1.5; }\n"
+      "  else if (vType == 7u) { d = render_icon_close(p, center); }\n"
+      "  else if (vType == 8u) { d = render_icon_maximize(p, center); }\n"
+      "  else if (vType == 9u) { d = render_icon_minimize(p, center); }\n"
+      "  else if (vType == 11u) { d = render_separator(p); }\n"
+      "  else if (vType == 13u) { d = render_icon_plus(p, center); }\n"
+      "  else if (vType == 14u) { d = render_icon_chevron(p, center); }\n"
+      "  else { d = render_rect(p, center, vRadius); aa = fwidth(d) * 1.5; }\n"
+      "  col.a *= (1.0 - smoothstep(-aa, aa, d));\n"
+      "  if (col.a < 0.01) discard;\n"
+      "  fragColor = col;\n"
+      "}\n";
+
+  return compile_program_with_sources(
+      tag ? tag : "GL compat renderer", k_vert, k_frag, out_loc_screen_size,
+      out_loc_font_tex, out_loc_image_tex, out_loc_atlas_size, out_loc_px_range,
+      out_loc_output_transform_enabled, out_loc_output_matrix,
+      out_loc_output_src_srgb, out_loc_output_src_gamma, out_loc_output_dst_srgb,
+      out_loc_output_dst_gamma);
+}
+
+// Compile and link shader program, returns program handle or 0 on failure
+// Does NOT modify ap->program - caller decides what to do with result
+static GLuint compile_program_internal(
+    StygianAP *ap, GLint *out_loc_screen_size, GLint *out_loc_font_tex,
+    GLint *out_loc_image_tex, GLint *out_loc_atlas_size,
+    GLint *out_loc_px_range, GLint *out_loc_output_transform_enabled,
+    GLint *out_loc_output_matrix, GLint *out_loc_output_src_srgb,
+    GLint *out_loc_output_src_gamma, GLint *out_loc_output_dst_srgb,
+    GLint *out_loc_output_dst_gamma) {
+  if (ap && ap->adapter_class == STYGIAN_AP_ADAPTER_IGPU) {
+    fprintf(stderr,
+            "[Stygian AP] Using GL integrated-GPU renderer on this adapter.\n");
+    fflush(stderr);
+    return compile_gl_compat_program(
+        "GL integrated-GPU renderer", out_loc_screen_size, out_loc_font_tex,
+        out_loc_image_tex, out_loc_atlas_size, out_loc_px_range,
+        out_loc_output_transform_enabled, out_loc_output_matrix,
+        out_loc_output_src_srgb, out_loc_output_src_gamma,
+        out_loc_output_dst_srgb, out_loc_output_dst_gamma);
+  }
+
+  char *vert_src = load_shader_file(ap, "stygian.vert");
+  GLuint program = 0;
+  if (!vert_src)
+    return 0;
+
+  char *frag_src = load_shader_file(ap, "stygian.frag");
+  if (!frag_src) {
+    ap_free(ap, vert_src);
+    return 0;
+  }
+
+  program = compile_program_with_sources(
+      "Main GL program", vert_src, frag_src, out_loc_screen_size, out_loc_font_tex,
+      out_loc_image_tex, out_loc_atlas_size, out_loc_px_range,
+      out_loc_output_transform_enabled, out_loc_output_matrix,
+      out_loc_output_src_srgb, out_loc_output_src_gamma, out_loc_output_dst_srgb,
+      out_loc_output_dst_gamma);
+  ap_free(ap, vert_src);
+  ap_free(ap, frag_src);
+  if (program)
+    return program;
+
+  fprintf(stderr,
+          "[Stygian AP] Main GL program failed, falling back to GL compat path.\n");
+  fflush(stderr);
+  program = compile_gl_compat_program(
+      "GL fallback renderer", out_loc_screen_size, out_loc_font_tex,
+      out_loc_image_tex,
+      out_loc_atlas_size, out_loc_px_range, out_loc_output_transform_enabled,
+      out_loc_output_matrix, out_loc_output_src_srgb, out_loc_output_src_gamma,
+      out_loc_output_dst_srgb, out_loc_output_dst_gamma);
   return program;
 }
 
@@ -938,6 +1745,15 @@ static void upload_output_color_transform_uniforms(StygianAP *ap) {
     glUniform1f(ap->loc_output_dst_gamma, ap->output_dst_gamma);
   }
 }
+
+#if 0
+static void stygian_ap_log_limit(const char *label, GLenum pname) {
+  GLint value = 0;
+  glGetIntegerv(pname, &value);
+  fprintf(stderr, "[Stygian AP] %s: %d\n", label, (int)value);
+  fflush(stderr);
+}
+#endif
 
 static void stygian_ap_bind_program_if_needed(StygianAP *ap) {
   if (!ap || !ap->program)
@@ -1183,7 +1999,6 @@ StygianAP *stygian_ap_create(const StygianAPConfig *config) {
   } else {
     printf("[Stygian AP] Warning: Could not get GL version\n");
   }
-
   // Create shader program
   if (!create_program(ap)) {
     stygian_ap_destroy(ap);

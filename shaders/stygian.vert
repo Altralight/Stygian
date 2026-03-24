@@ -18,6 +18,24 @@ struct SoAAppearance {
     vec4 control_points;   // 16 - bezier/wire/metaball control data
 };                         // 64 bytes
 
+struct SoATransform {
+    vec4 row0;
+    vec4 row1;
+};                         // 32 bytes
+
+layout(std430, binding = 4) readonly buffer SoAHotBuffer {
+    SoAHot soa_hot[];
+};
+
+layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer {
+    SoAAppearance soa_appearance[];
+};
+
+#ifndef STYGIAN_GL
+layout(std430, binding = 3) readonly buffer ClipBuffer {
+    vec4 clip_rects[];
+};
+
 struct SoAEffects {
     vec2 shadow_offset;    //  8
     float shadow_blur;     //  4
@@ -34,19 +52,6 @@ struct SoAEffects {
     vec2 _pad;             //  8
 };                         // 96 bytes
 
-struct SoATransform {
-    vec4 row0;
-    vec4 row1;
-};                         // 32 bytes
-
-layout(std430, binding = 4) readonly buffer SoAHotBuffer {
-    SoAHot soa_hot[];
-};
-
-layout(std430, binding = 5) readonly buffer SoAAppearanceBuffer {
-    SoAAppearance soa_appearance[];
-};
-
 layout(std430, binding = 6) readonly buffer SoAEffectsBuffer {
     SoAEffects soa_effects[];
 };
@@ -54,6 +59,7 @@ layout(std430, binding = 6) readonly buffer SoAEffectsBuffer {
 layout(std430, binding = 7) readonly buffer SoATransformBuffer {
     SoATransform soa_transform[];
 };
+#endif
 
 // Per-frame uniforms - different for OpenGL vs Vulkan
 #ifdef STYGIAN_GL
@@ -87,6 +93,9 @@ layout(location = 9) flat out uint vInstanceID;
 layout(location = 10) flat out uint vTextureID;
 layout(location = 11) flat out vec4 vReserved0; // _reserved[0] for bezier/wire/metaball
 layout(location = 12) out vec2 vWorldPos;
+layout(location = 13) flat out uint vClipID;
+layout(location = 14) flat out vec4 vClipRect;
+layout(location = 15) flat out float vGlowIntensity;
 
 void main() {
     // Read from SoA (primary path)
@@ -101,13 +110,18 @@ void main() {
     vec2 size = vec2(h.w, h.h);
     vec2 localPos = vec2(uv01.x, 1.0 - uv01.y) * size;
     vec2 elementPos = vec2(h.x, h.y) + localPos;
+    vec2 pixelPos = elementPos;
+#ifndef STYGIAN_GL
     SoATransform t = soa_transform[INSTANCE_ID];
 
-    // Pixel space position (Y-down)
-    vec2 pixelPos = vec2(
+    // Vulkan keeps the full transform path. Old Intel GL drivers were falling
+    // over before we even got a frame on screen, so GL stays on the simpler
+    // position path for now.
+    pixelPos = vec2(
         t.row0.x * elementPos.x + t.row0.y * elementPos.y + t.row0.z,
         t.row1.x * elementPos.x + t.row1.y * elementPos.y + t.row1.z
     );
+#endif
     vec2 ndc = (pixelPos / SCREEN_SIZE) * 2.0 - 1.0;
 
     // Flip Y for OpenGL viewport
@@ -128,17 +142,30 @@ void main() {
     vRadius = a.radius;
     vUV = a.uv;
 
-    // Effects data
+    // Effects stay live on Vulkan. GL takes the boring defaults here because
+    // the driver would rather throw "out of resource" than admit it hates the
+    // full vertex contract.
+#ifdef STYGIAN_GL
+    vBlend = 1.0;
+    vHover = 0.0;
+    vGlowIntensity = 0.0;
+#else
     SoAEffects fx = soa_effects[INSTANCE_ID];
     vBlend = fx.blend;
     vHover = fx.hover;
+    vGlowIntensity = fx.glow_intensity;
+#endif
 
     // Geometry
     vLocalPos = localPos;
     vSize = size;
     vInstanceID = INSTANCE_ID;
     vWorldPos = pixelPos;
-
+    vClipID = (h.flags & 0x0000FF00u) >> 8u;
+    vClipRect = vec4(0.0);
+#ifndef STYGIAN_GL
+    vClipRect = (vClipID != 0u) ? clip_rects[vClipID] : vec4(0.0);
+#endif
     // Pass control points from SoA (bezier/wire/metaball)
     vReserved0 = a.control_points;
 }

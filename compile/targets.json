@@ -111,6 +111,16 @@
       "entry_source": "showcase/apps/fadeterm/src/fadeterm.c",
       "output_stem": "fadeterm_vk"
     },
+    "filenight": {
+      "backend": "gl",
+      "entry_source": "showcase/apps/filenight/src/filenight.c",
+      "output_stem": "filenight"
+    },
+    "filenight_vk": {
+      "backend": "vk",
+      "entry_source": "showcase/apps/filenight/src/filenight.c",
+      "output_stem": "filenight_vk"
+    },
     "quickwindow": {
       "backend": "gl",
       "entry_source": "examples/quickwindow.c",

@@ -31,6 +31,9 @@ capture/
 
 # Private local notes and application drafts
 notes/
+editor/
+*_root_stdout.txt
+*_root_stderr.txt
 
 # Local review and capture scratch
 win32_followup_improvements.md

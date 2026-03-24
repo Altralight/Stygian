@@ -2,7 +2,7 @@
 
 // Font texture sampler (binding 1)
 layout(binding = 1) uniform sampler2D uFontTex;
-layout(binding = 2) uniform sampler2D uImageTex[16];
+layout(binding = 2) uniform sampler2D uImageTex[8];
 
 // Text uniforms - different for OpenGL vs Vulkan
 #ifdef STYGIAN_GL

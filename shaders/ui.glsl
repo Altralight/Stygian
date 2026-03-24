@@ -45,6 +45,14 @@ float render_icon_minimize(vec2 p, vec2 center) {
     return sdBox(p, vec2(line_w, 1.0));
 }
 
+// Type 13: STYGIAN_ICON_PLUS - Plus icon
+float render_icon_plus(vec2 p, vec2 center) {
+    float arm = min(center.x, center.y) * 0.46;
+    float d1 = sdSegment(p, vec2(-arm, 0.0), vec2(arm, 0.0)) - 1.35;
+    float d2 = sdSegment(p, vec2(0.0, -arm), vec2(0.0, arm)) - 1.35;
+    return min(d1, d2);
+}
+
 // Type 14: STYGIAN_ICON_CHEVRON - Chevron icon
 float render_icon_chevron(vec2 p, vec2 center) {
     float arm = min(center.x, center.y) * 0.50;

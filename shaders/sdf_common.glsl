@@ -38,7 +38,11 @@ float smoothUnion(float d1, float d2, float k) {
 // ============================================================================
 // Advanced SDF Primitives (Phase 5.5)
 // ============================================================================
-
+//
+// Old Intel GL drivers were happy right up until these extra branches and curve
+// evaluators joined the party. Vulkan keeps the full set; GL can earn them back
+// later once it stops exploding on link.
+#ifndef STYGIAN_GL
 float sdTriangle(vec2 p, vec2 p0, vec2 p1, vec2 p2) {
     vec2 e0 = p1 - p0, e1 = p2 - p1, e2 = p0 - p2;
     vec2 v0 = p - p0, v1 = p - p1, v2 = p - p2;
@@ -152,3 +156,4 @@ float sdPolygon(vec2 p, vec2 v[8], int N) {
     }
     return s * sqrt(d);
 }
+#endif

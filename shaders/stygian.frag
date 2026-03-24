@@ -17,15 +17,13 @@ layout(location = 9) flat in uint vInstanceID;
 layout(location = 10) flat in uint vTextureID;
 layout(location = 11) flat in vec4 vReserved0; // control points for bezier/wire/metaball
 layout(location = 12) in vec2 vWorldPos;
-
+layout(location = 13) flat in uint vClipID;
+layout(location = 14) flat in vec4 vClipRect;
+layout(location = 15) flat in float vGlowIntensity;
 layout(location = 0) out vec4 fragColor;
 
-// Clip rect buffer (binding 3)
-layout(std430, binding = 3) readonly buffer ClipBuffer {
-    vec4 clip_rects[];
-};
-
-// === SoA SSBOs (sole data source) ===
+#ifndef STYGIAN_GL
+// Vulkan keeps the fragment-side SoA path. The current Intel GL driver does not.
 struct SoAHot {
     float x, y, w, h;     // 16 - bounds
     vec4 color;            // 16 - primary RGBA
@@ -70,7 +68,6 @@ layout(std430, binding = 6) readonly buffer SoAEffectsBuffer {
     SoAEffects soa_effects[];
 };
 
-#ifndef STYGIAN_GL
 layout(push_constant) uniform PushConstants {
     vec4 uScreenAtlas;   // xy=screen size, zw=atlas size
     vec4 uPxRangeFlags;  // x=px range, y=enabled, z=src sRGB, w=dst sRGB
@@ -90,6 +87,9 @@ layout(push_constant) uniform PushConstants {
 #include "ui.glsl"
 
 #ifdef STYGIAN_GL
+layout(std430, binding = 3) readonly buffer ClipBuffer {
+    vec4 clip_rects[];
+};
 uniform int uOutputColorTransformEnabled;
 uniform mat3 uOutputColorMatrix;
 uniform int uOutputSrcIsSRGB;
@@ -161,6 +161,7 @@ vec4 apply_output_color_transform(vec4 color_in) {
 #endif
 }
 
+#ifndef STYGIAN_GL
 // Type 12: STYGIAN_METABALL_GROUP - Render children as dynamic SDF blob
 float render_metaball_group(vec2 p, uint id, vec4 reserved0, float k) {
     SoAHot h = soa_hot[id];
@@ -194,6 +195,7 @@ float render_metaball_group(vec2 p, uint id, vec4 reserved0, float k) {
     
     return d;
 }
+#endif
 
 void main() {
     vec2 center = vSize * 0.5;
@@ -201,11 +203,9 @@ void main() {
     vec4 r = vRadius;
     uint type = vType;
 
-    // Clip test — read flags from SoA hot buffer
-    SoAHot h_clip = soa_hot[vInstanceID];
-    uint clip_id = (h_clip.flags & 0x0000FF00u) >> 8u;
-    if (clip_id != 0u) {
-        vec4 clip_rect = clip_rects[clip_id];
+#ifdef STYGIAN_GL
+    if (vClipID != 0u) {
+        vec4 clip_rect = clip_rects[vClipID];
         if (vWorldPos.x < clip_rect.x || vWorldPos.y < clip_rect.y ||
             vWorldPos.x > clip_rect.x + clip_rect.z ||
             vWorldPos.y > clip_rect.y + clip_rect.w) {
@@ -216,7 +216,82 @@ void main() {
     vec4 col = vColor;
     float d = 1000.0;
     float aa = 1.5;
-    float glow_intensity = soa_effects[vInstanceID].glow_intensity;
+
+    if (type == 6u) {
+        fragColor = render_text(vLocalPos, vSize, vUV, col, vBlend);
+        if (fragColor.a < 0.01) discard;
+        return;
+    }
+    else if (type == 10u) {
+        fragColor = render_texture(vLocalPos, vSize, vUV, col, vTextureID);
+        return;
+    }
+    else if (type == 0u) {
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+    }
+    else if (type == 1u) {
+        d = render_rect_outline(p, center, r);
+        aa = fwidth(d) * 1.5;
+    }
+    else if (type == 2u) {
+        d = render_circle(p, center);
+        aa = fwidth(d) * 1.5;
+    }
+    else if (type == 3u || type == 4u || type == 12u) {
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+    }
+    else if (type == 5u) {
+        d = render_window_body(p, center, r, vBorderColor, col);
+        aa = fwidth(d) * 1.5;
+    }
+    else if (type == 7u) {
+        d = render_icon_close(p, center);
+    }
+    else if (type == 8u) {
+        d = render_icon_maximize(p, center);
+    }
+    else if (type == 9u) {
+        d = render_icon_minimize(p, center);
+    }
+    else if (type == 11u) {
+        d = render_separator(p);
+    }
+    else if (type == 13u) {
+        d = render_icon_plus(p, center);
+    }
+    else if (type == 14u) {
+        d = render_icon_chevron(p, center);
+    }
+    else {
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+    }
+
+    col.a *= (1.0 - smoothstep(-aa, aa, d)) * vBlend;
+    if (col.a < 0.01) discard;
+    fragColor = col;
+    return;
+#endif
+
+    // Clip test — read flags from SoA hot buffer
+    if (vClipID != 0u) {
+        vec4 clip_rect = vClipRect;
+#ifdef STYGIAN_GL
+        clip_rect = clip_rects[vClipID];
+#endif
+        if (vWorldPos.x < clip_rect.x || vWorldPos.y < clip_rect.y ||
+            vWorldPos.x > clip_rect.x + clip_rect.z ||
+            vWorldPos.y > clip_rect.y + clip_rect.w) {
+            discard;
+        }
+    }
+
+    vec4 col = vColor;
+    float d = 1000.0;
+    float aa = 1.5;
+    float glow_intensity = vGlowIntensity;
     
     // Type dispatch - ALL in one shader, one draw call
     // Type 0: STYGIAN_RECT - Rounded rectangle
@@ -280,6 +355,11 @@ void main() {
         d = render_separator(p);
         aa = 1.5;
     }
+    // Type 13: STYGIAN_ICON_PLUS - Plus icon
+    else if (type == 13u) {
+        d = render_icon_plus(p, center);
+        aa = 1.5;
+    }
     // Type 14: STYGIAN_ICON_CHEVRON - Chevron icon
     else if (type == 14u) {
         d = render_icon_chevron(p, center);
@@ -287,24 +367,39 @@ void main() {
     }
     // Type 12: STYGIAN_METABALL_GROUP - Dynamic SDF Blending
     else if (type == 12u) {
+#ifdef STYGIAN_GL
+        // GL gets the boring path here so old Intel drivers stop falling over.
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+#else
         // vBlend holds the smoothness factor (k)
         float k = vBlend; 
         if (k < 0.1) k = 10.0; // Default smooth if 0
         
         d = render_metaball_group(p, vInstanceID, vReserved0, k);
         aa = fwidth(d) * 1.5;
+#endif
     }
     // Type 15: STYGIAN_LINE - SDF Line Segment
     else if (type == 15u) {
+#ifdef STYGIAN_GL
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+#else
         vec2 worldP = vLocalPos;
         vec2 a = vUV.xy;
         vec2 b = vUV.zw;
         float half_thick = vRadius.x;
         d = sdSegment(worldP, a, b) - half_thick;
         aa = fwidth(d) * 1.5;
+#endif
     }
     // Type 16: STYGIAN_BEZIER - SDF Quadratic Bezier
     else if (type == 16u) {
+#ifdef STYGIAN_GL
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+#else
         vec2 worldP = vLocalPos;
         vec2 A = vUV.xy;
         vec2 C = vUV.zw;
@@ -312,9 +407,14 @@ void main() {
         float half_thick = vRadius.x;
         d = sdBezier(worldP, A, B, C) - half_thick;
         aa = fwidth(d) * 1.5;
+#endif
     }
     // Type 17: STYGIAN_WIRE - SDF Cubic Bezier
     else if (type == 17u) {
+#ifdef STYGIAN_GL
+        d = render_rect(p, center, r);
+        aa = fwidth(d) * 1.5;
+#else
         vec2 worldP = vLocalPos;
         vec2 A = vUV.xy; 
         vec2 D = vUV.zw;
@@ -323,6 +423,7 @@ void main() {
         float half_thick = vRadius.x;
         d = sdCubicBezierApprox(worldP, A, B, C, D) - half_thick;
         aa = fwidth(d) * 1.5;
+#endif
     }
     else {
         // Fallback: simple box

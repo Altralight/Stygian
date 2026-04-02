@@ -482,5 +482,3 @@ Stygian is strongest today in native-tooling UI, not generic component-box check
 New widgets should fit the invalidation-driven model instead of smuggling in redraw-on-input behavior.
 
 ---
-
-**Stygian can still aim big without lying about what is already there.**

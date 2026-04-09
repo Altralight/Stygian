@@ -12,7 +12,7 @@ Stygian is a native C23 UI library built around a DDI-style runtime: input and a
 
 The core data model is triple-buffered SoA storage split into hot geometry/state, appearance, and effects buffers. Elements live on the GPU between frames, dirty chunk ranges are tracked explicitly, and clean scopes replay without re-uploading clean data. On a fully static frame, Stygian can stay in an eval-only or deep-wait path with zero upload and no forced redraw.
 
-Rendering is SDF-first across the stack: window chrome, primitive shapes, editor wires, and text all feed the same GPU-native rendering model instead of dropping back to a pile of CPU triangles. OpenGL 4.3 and Vulkan access points are already implemented. Text uses MTSDF with the Triad glyph pipeline and compression policy selection for iGPU/dGPU targets. Output color management includes ICC-aware monitor binding on Win32. The current codebase also includes scope invalidation/replay, multi-producer command buffers with deterministic commit, custom titlebar and borderless behavior, dock/tabs, a node graph editor path, and a shipped widget baseline aimed at real desktop tools rather than toy demos.
+Rendering is SDF-first across the stack: window chrome, primitive shapes, editor wires, and text all feed the same GPU-native rendering model instead of dropping back to a pile of CPU triangles. OpenGL 4.3 and Vulkan access points are already implemented. Text uses MTSDF with the SGC glyph pipeline and compression policy selection for iGPU/dGPU targets. Output color management includes ICC-aware monitor binding on Win32. The current codebase also includes scope invalidation/replay, multi-producer command buffers with deterministic commit, custom titlebar and borderless behavior, dock/tabs, a node graph editor path, and a shipped widget baseline aimed at real desktop tools rather than toy demos.
 
 ## Platform Support
 
@@ -26,7 +26,7 @@ Rendering is SDF-first across the stack: window chrome, primitive shapes, editor
 
 ## Why Not others?
 
-Stygian is not trying to be another immediate-mode triangle UI. The differentiation is: SDF-first rendering for shapes, chrome, wires, and text; invalidation-driven rendering instead of redraw-on-input; GPU-resident SoA element storage instead of per-frame CPU vertex rebuilds; generational element handles with deterministic commit; ICC-aware output handling; and MTSDF text with Triad glyph compression policy. Dear ImGui and Clay solve different problems; neither gives you this data-driven immediate DDI runtime with persistent scene/state backing, GPU-native SDF rendering, or color-management path.
+Stygian is not trying to be another immediate-mode triangle UI. The differentiation is: SDF-first rendering for shapes, chrome, wires, and text; invalidation-driven rendering instead of redraw-on-input; GPU-resident SoA element storage instead of per-frame CPU vertex rebuilds; generational element handles with deterministic commit; ICC-aware output handling; and MTSDF text with SGC glyph compression policy. Dear ImGui and Clay solve different problems; neither gives you this data-driven immediate DDI runtime with persistent scene/state backing, GPU-native SDF rendering, or color-management path.
 
 ## Quick Start
 

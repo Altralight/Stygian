@@ -6,7 +6,7 @@
 
 GPU-accelerated SDF UI and tool runtime for C23. Single draw call. Invalidation-driven. Cross-platform.
 
-## What It Is
+## What this is
 
 Stygian is a native C23 UI library built around a DDI-style runtime: input and app logic classify impact, command producers publish mutations, the core commits deterministically into GPU-resident SoA buffers, then the frame either renders or skips. The point is simple: static UI should not rebuild and redraw just because input is still flowing through the app.
 
@@ -24,9 +24,9 @@ Rendering is SDF-first across the stack: window chrome, primitive shapes, editor
 | Linux (X11) | Vulkan | Building |
 | macOS (Cocoa) | OpenGL | Building |
 
-## Why Not Dear ImGui / Clay?
+## Why Not others?
 
-Stygian is not trying to be another immediate-mode triangle UI. The differentiation is structural: SDF-first rendering for shapes, chrome, wires, and text; invalidation-driven rendering instead of redraw-on-input; GPU-resident SoA element storage instead of per-frame CPU vertex rebuilds; generational element handles with deterministic commit; ICC-aware output handling; and MTSDF text with Triad glyph compression policy. Dear ImGui and Clay solve different problems; neither gives you this data-driven immediate DDI runtime with persistent scene/state backing, GPU-native SDF rendering, or color-management path.
+Stygian is not trying to be another immediate-mode triangle UI. The differentiation is: SDF-first rendering for shapes, chrome, wires, and text; invalidation-driven rendering instead of redraw-on-input; GPU-resident SoA element storage instead of per-frame CPU vertex rebuilds; generational element handles with deterministic commit; ICC-aware output handling; and MTSDF text with Triad glyph compression policy. Dear ImGui and Clay solve different problems; neither gives you this data-driven immediate DDI runtime with persistent scene/state backing, GPU-native SDF rendering, or color-management path.
 
 ## Quick Start
 
@@ -128,24 +128,24 @@ Calculator mini:
 
 Shipped widgets:
 
-- [Shipped] `button`, `button_ex`
-- [Shipped] `slider`, `slider_ex`
-- [Shipped] `checkbox`, `radio_button`
-- [Shipped] `text_input`, `text_area`
-- [Shipped] `scrollbar_v`
-- [Shipped] `tooltip`
-- [Shipped] `context_menu`
-- [Shipped] `modal`
-- [Shipped] `panel`
-- [Shipped] `perf_widget`
-- [Shipped] `file_explorer`, `breadcrumb`
-- [Shipped] `output_panel`, `problems_panel`
-- [Shipped] `debug_toolbar`, `call_stack`
-- [Shipped] `coordinate_input`, `snap_settings`
-- [Shipped] `cad_gizmo`, `layer_manager`
-- [Shipped] `scene_viewport`, `scene_hierarchy`, `inspector`, `asset_browser`, `console_log`
-- [Shipped] `split_panel`, `menu_bar`, `toolbar`
-- [Shipped] `node_graph` helpers and node/wire drawing path
+- [Done] `button`, `button_ex`
+- [Done] `slider`, `slider_ex`
+- [Done] `checkbox`, `radio_button`
+- [Done] `text_input`, `text_area`
+- [Done] `scrollbar_v`
+- [Done] `tooltip`
+- [Done] `context_menu`
+- [Done] `modal`
+- [Done] `panel`
+- [Done] `perf_widget`
+- [Done] `file_explorer`, `breadcrumb`
+- [Done] `output_panel`, `problems_panel`
+- [Done] `debug_toolbar`, `call_stack`
+- [Done] `coordinate_input`, `snap_settings`
+- [Done] `cad_gizmo`, `layer_manager`
+- [Done] `scene_viewport`, `scene_hierarchy`, `inspector`, `asset_browser`, `console_log`
+- [Done] `split_panel`, `menu_bar`, `toolbar`
+- [Done? still needs work] `node_graph` helpers and node/wire drawing path
 
 Roadmap and broader taxonomy live in [widgets/WIDGET_TAXONOMY.md](widgets/WIDGET_TAXONOMY.md).
 
